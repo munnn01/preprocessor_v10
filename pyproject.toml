@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-machine-preprocessing"
+version = "0.2.0"
+description = "ViT preprocessing through standard video codecs with proxy gradients"
+requires-python = ">=3.10"
+dependencies = [
+  "matplotlib>=3.7",
+  "numpy>=1.24",
+  "opencv-python-headless>=4.8",
+  "torch>=2.3",
+  "torchinfo>=1.8",
+  "torchvision>=0.18",
+  "tqdm>=4.66",
+]
+
+[tool.setuptools.packages.find]
+include = ["preprocessing*"]
+
+[tool.ruff]
+line-length = 100

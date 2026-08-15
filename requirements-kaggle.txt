@@ -1,0 +1,7 @@
+# Kaggle already provides a CUDA-enabled PyTorch/torchvision pair.
+# NumPy 1.26 and OpenCV 4.11 use a mutually compatible ABI.
+matplotlib>=3.7
+numpy==1.26.4
+opencv-python-headless==4.11.0.86
+torchinfo>=1.8
+tqdm>=4.66
