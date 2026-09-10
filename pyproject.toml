@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-machine-preprocessing"
+version = "0.9.0"
+description = "Adaptive pre/post video preprocessing for machine and human codec objectives"
+requires-python = ">=3.10"
+dependencies = [
+  "matplotlib>=3.7",
+  "numpy>=1.24",
+  "opencv-python-headless>=4.8",
+  "torch>=2.3",
+  "torchinfo>=1.8",
+  "torchvision>=0.18",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+research = [
+  "lpips>=0.1.4",
+  "onnx>=1.16",
+  "reportlab>=4.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["preprocessing*"]
+
+[tool.ruff]
+line-length = 100

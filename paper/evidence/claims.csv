@@ -1,0 +1,11 @@
+claim_id,claim_text,claim_type,source_or_artifact,status,allowed_in_submission
+C001,"The training forward path uses real codec reconstruction and BPP while proxy tensors supply gradients.",implemented_method,"preprocessing/standard_codec.py; tests/test_sandwich.py",machine_verified,yes_after_human_review
+C002,"The codec and proxy parameters remain frozen during wrapper training.",implemented_method,"preprocessing/sandwich.py; tests/test_sandwich.py",machine_verified,yes_after_human_review
+C003,"Preprocessor and postprocessor start as exact identity mappings.",implemented_method,"preprocessing/swin.py; preprocessing/postprocessor.py; tests/test_sandwich.py",machine_verified,yes_after_human_review
+C004,"Lu et al. report approximately 20.3% versus 14.6% bitrate reduction in their real-forward versus proxy-forward image setting.",prior_work_result,"Lu et al. local PDF pages 8-9",source_checked,yes_as_prior_work_only
+C005,"Sandwiched Compression reports gains up to 30% for selected codec adaptations.",prior_work_result,"arXiv:2402.05887 abstract",source_checked,yes_as_prior_work_only
+C006,"RPP reports 16.27% average bitrate saving under its experimental setup.",prior_work_result,"arXiv:2301.10455 abstract",source_checked,yes_as_prior_work_only
+C007,"The proposed V9 system reduces task BD-rate on H.264/H.265.",new_empirical_result,"outputs/sandwich_real_codec/summary.json",unmeasured,no
+C008,"The proposed V9 system meets real-time or power targets on Jetson Orin NX.",new_empirical_result,"outputs/jetson_benchmark.json; outputs/tegrastats_summary.json",unmeasured,no
+C009,"The current repository passes 89 automated tests.",verification,"pytest -q on 2026-09-10",machine_verified,yes_after_human_review
+C010,"No author-linked official RPP code was found.",search_observation,"bounded exact-title and author GitHub/web searches on 2026-09-10",bounded_not_exhaustive,yes_with_qualification

@@ -1,0 +1,75 @@
+{
+  "manifest_version": 1,
+  "generated_on": "2026-09-10",
+  "verification_status": "machine_checked_pending_human",
+  "sources": [
+    {
+      "id": "lu2024",
+      "title": "Preprocessing Enhanced Image Compression for Machine Vision",
+      "authors": ["Guo Lu", "Xingtong Ge", "Tianxiong Zhong", "Qiang Hu", "Jing Geng"],
+      "doi": "10.1109/TCSVT.2024.3441049",
+      "arxiv": "2206.05650",
+      "local_pdf": "D:/STUDY/LAB/News/Preprocessing_Enhanced_Image_Compression_for_Machine_Vision.pdf",
+      "code": "https://github.com/XingtongGe/PreprocessingICM",
+      "used_for": ["forward-real-codec proxy-backward estimator", "reported prior-work 20.3% versus 14.6% ablation"],
+      "checked": ["local PDF pages 1, 5, 8-9", "author GitHub README"]
+    },
+    {
+      "id": "guleryuz2024",
+      "title": "Sandwiched Compression: Repurposing Standard Codecs with Neural Network Wrappers",
+      "authors": ["Onur G. Guleryuz", "Philip A. Chou", "Berivan Isik", "Hugues Hoppe", "Danhang Tang", "Ruofei Du", "Jonathan Taylor", "Philip Davidson", "Sean Fanello"],
+      "arxiv": "2402.05887",
+      "local_pdf": "D:/STUDY/LAB/News/Sandwiched Compression Repurposing Standard Codecs with Neural Network Wrappers.pdf",
+      "code": "https://github.com/google/sandwiched_compression",
+      "used_for": ["joint pre/post codec sandwich", "human perceptual objective"],
+      "checked": ["local PDF", "arXiv abstract", "official GitHub README"]
+    },
+    {
+      "id": "zhao2025",
+      "title": "A Preprocessing Framework for Video Machine Vision under Compression",
+      "authors": ["Fei Zhao", "Mengxi Guo", "Shijie Zhao", "Junlin Li", "Li Zhang", "Xiaodong Xie"],
+      "arxiv": "2512.15331",
+      "local_pdf": "D:/STUDY/LAB/News/A Preprocessing Framework for Video Machine Vision under Compression.pdf",
+      "used_for": ["video spatial-temporal preprocessing", "predictive virtual codec", "rate-distortion-accuracy framing"],
+      "checked": ["local PDF pages 1-10"]
+    },
+    {
+      "id": "ma2023",
+      "title": "Rate-Perception Optimized Preprocessing for Video Coding",
+      "authors": ["Chengqian Ma", "Zhiqiang Wu", "Chunlei Cai", "Pengwei Zhang", "Yi Wang", "Long Zheng", "Chao Chen", "Quan Zhou"],
+      "arxiv": "2301.10455",
+      "used_for": ["adaptive-DCT prior", "perceptual preprocessing motivation"],
+      "checked": ["arXiv abstract and paper metadata"],
+      "code_search": "No author-linked implementation identified in bounded exact-title and author GitHub/web searches on 2026-09-10."
+    },
+    {
+      "id": "oquab2023",
+      "title": "DINOv2: Learning Robust Visual Features without Supervision",
+      "arxiv": "2304.07193",
+      "code": "https://github.com/facebookresearch/dinov2",
+      "used_for": ["frozen task-agnostic semantic teacher"]
+    },
+    {
+      "id": "perez2018",
+      "title": "FiLM: Visual Reasoning with a General Conditioning Layer",
+      "arxiv": "1709.07871",
+      "used_for": ["featurewise QP conditioning"]
+    },
+    {
+      "id": "liu2022",
+      "title": "Video Swin Transformer",
+      "url": "https://openaccess.thecvf.com/content/CVPR2022/html/Liu_Video_Swin_Transformer_CVPR_2022_paper.html",
+      "used_for": ["local shifted-window spatiotemporal attention"]
+    }
+  ],
+  "local_lineage": [
+    "D:/STUDY/LAB/proxy_v3",
+    "D:/STUDY/LAB/proxy_v4",
+    "D:/STUDY/LAB/film_deeper3d",
+    "D:/STUDY/LAB/video_swin"
+  ],
+  "notes": [
+    "The local file named Adaptive Perceptual Preprocessing for Video Coding is a 2016 Xiang et al. paper and is not RPP arXiv:2301.10455.",
+    "All numerical V9 result fields remain unmeasured until produced by the locked protocol."
+  ]
+}
