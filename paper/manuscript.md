@@ -1,4 +1,4 @@
-# Adaptive Video Preprocessing Techniques for Optimizing Video Coding for Machines (VCM) on NVIDIA Jetson Orin NX
+# Adaptive Video Preprocessing Techniques for Optimizing Video Coding for Machines (VCM)
 
 Anonymous Author(s) — identities pending human approval
 
@@ -6,9 +6,9 @@ PRE-RESULTS MANUSCRIPT DRAFT — DO NOT SUBMIT
 
 ## Abstract
 
-Video coding for machines (VCM) must preserve features required by downstream analysis while respecting bitrate, human-viewing quality, and edge-compute constraints. We present a standards-compatible adaptive video preprocessing framework that places trainable neural pre- and postprocessors around a frozen H.264/AVC or H.265/HEVC codec. The preprocessor is a compact QP-conditioned Video Swin network; the postprocessor is an identity-initialized FiLM-3D residual network. During optimization, both decoded pixels and bitrate in the forward pass come from the real codec, while a frozen predictive-entropy proxy supplies gradients through the non-differentiable coding operation. A composite objective combines measured rate, frozen task loss, frozen DINOv2 feature consistency, and human-oriented Charbonnier, multiscale structural, optional LPIPS, temporal, and adaptive-DCT terms. The proxy and DINOv2 are training-only, and the two wrappers can be exported independently to TensorRT around the hardware codec on NVIDIA Jetson Orin NX. This manuscript defines the method, falsifiable hypotheses, ablations, and a reproducible measurement protocol. No new rate–accuracy or Jetson measurements are claimed because the required dataset, trained checkpoint, and target hardware were not present at manuscript generation time.
+Video coding for machines (VCM) must preserve features required by downstream analysis while respecting bitrate and human-viewing quality. We present a standards-compatible adaptive video preprocessing framework that places trainable neural pre- and postprocessors around a frozen H.264/AVC or H.265/HEVC codec. The preprocessor is a compact QP-conditioned Video Swin network; the postprocessor is an identity-initialized FiLM-3D residual network. During optimization, both decoded pixels and bitrate in the forward pass come from the real codec, while a frozen predictive-entropy proxy supplies gradients through the non-differentiable coding operation. A composite objective combines measured rate, frozen task loss, frozen DINOv2 feature consistency, and human-oriented Charbonnier, multiscale structural, optional LPIPS, temporal, and adaptive-DCT terms. This manuscript defines the method, falsifiable hypotheses, ablations, and a reproducible measurement protocol. No new rate-accuracy measurements are claimed because the required dataset and trained checkpoint were not present at manuscript generation time.
 
-Keywords—video coding for machines, neural preprocessing, standard codec, straight-through estimation, DINOv2, Video Swin Transformer, FiLM, Jetson Orin NX.
+Keywords—video coding for machines, neural preprocessing, standard codec, straight-through estimation, DINOv2, Video Swin Transformer, FiLM.
 
 ## 1. Introduction
 
@@ -16,16 +16,16 @@ Edge cameras increasingly transmit video for recognition rather than viewing alo
 
 Prior work provides complementary pieces of this solution. Lu et al. [1] learn a quantization-adaptive image preprocessor and show that using the real codec in the forward pass while using a proxy for backpropagation avoids a train–test mismatch. Sandwiched Compression [2] surrounds a standard codec with jointly trained neural wrappers and demonstrates that a codec can transport a learned neural code optimized for a metric unlike its native distortion. Zhao et al. [3] extend task-aware preprocessing to video using spatial/temporal processing and a differentiable virtual codec. Rate-Perception Optimized Preprocessing (RPP) [4] introduces an adaptive DCT term and perceptual training strategy. DINOv2 [5] offers broadly useful frozen visual features; FiLM [6] offers a compact mechanism to condition computation on codec QP; and Video Swin Transformer [7] supplies an efficient local spatiotemporal attention pattern.
 
-These components are not sufficient by simple concatenation. A postprocessor can improve human quality while shifting the input distribution seen by the machine model. A codec proxy can provide gradients whose values differ materially from deployment. A perceptual term can preserve texture that is costly but irrelevant to the task, while a task loss can erase information required by people or by an unseen task. Finally, an architecture that improves rate–accuracy on a desktop GPU may violate latency or power constraints on an embedded device.
+These components are not sufficient by simple concatenation. A postprocessor can improve human quality while shifting the input distribution seen by the machine model. A codec proxy can provide gradients whose values differ materially from evaluation. A perceptual term can preserve texture that is costly but irrelevant to the task, while a task loss can erase information required by people or by an unseen task.
 
-We therefore define a single, auditable framework whose key design rule is strict separation of forward truth from backward approximation. Real H.264/H.265 reconstructions and elementary-stream byte counts determine every training loss value and every evaluation result. The learned codec proxy contributes only a Jacobian. The human and machine objectives are explicit rather than collapsed into an undocumented score, and deployment excludes all training-only teachers.
+We therefore define a single, auditable framework whose key design rule is strict separation of forward truth from backward approximation. Real H.264/H.265 reconstructions and elementary-stream byte counts determine every training loss value and every evaluation result. The learned codec proxy contributes only a Jacobian. The human and machine objectives are explicit rather than collapsed into an undocumented score, and the measured codec path excludes all training-only teachers.
 
 The contributions of this work are:
 
 1. A video codec sandwich combining a QP-FiLM Video Swin Lite preprocessor, a frozen standard codec, and a compact QP-FiLM 3-D postprocessor, both wrappers initialized as exact identity mappings.
 2. A forward-real-codec/proxy-backward estimator for both decoded pixels and BPP, adapted from image preprocessing to a predictive video entropy proxy.
 3. A joint VCM objective that balances measured rate, supervised task fidelity, DINOv2 semantic consistency, and human-oriented spatial, temporal, perceptual, and adaptive-DCT losses.
-4. A deployment split that exports only the pre/post wrappers to ONNX/TensorRT around Jetson hardware codecs, together with a locked accuracy, latency, memory, and power protocol.
+4. A locked paired evaluation and artifact protocol for task, rate, and reconstruction metrics across real H.264/H.265 operating points.
 5. An open research implementation with gradient-invariant tests and an evidence ledger that prevents prior-work values from being presented as new results.
 
 ## 2. Related Work
@@ -36,7 +36,7 @@ Lu et al. [1] place a neural preprocessing module before a non-differentiable im
 
 ### 2.2 Neural codec sandwiches and perception
 
-Guleryuz et al. [2] jointly train pre/post networks around standard codecs through differentiable proxies. Their examples show that the transported signal can function as a neural code and can optimize LPIPS, VMAF, or a non-native signal domain. We retain their two-sided architecture but specialize it for machine-video semantics, temporal consistency, QP adaptation, and embedded deployment. RPP [4] uses an adaptive DCT objective, image-quality assessment, high-order degradation, and a lightweight network for perceptual coding. Our DCT term follows the principle of suppressing weak high-frequency coefficients while preserving strong coefficients; it is not claimed to be a line-for-line reproduction of RPP.
+Guleryuz et al. [2] jointly train pre/post networks around standard codecs through differentiable proxies. Their examples show that the transported signal can function as a neural code and can optimize LPIPS, VMAF, or a non-native signal domain. We retain their two-sided architecture but specialize it for machine-video semantics, temporal consistency, and QP adaptation. RPP [4] uses an adaptive DCT objective, image-quality assessment, high-order degradation, and a lightweight network for perceptual coding. Our DCT term follows the principle of suppressing weak high-frequency coefficients while preserving strong coefficients; it is not claimed to be a line-for-line reproduction of RPP.
 
 ### 2.3 Semantic and conditional representations
 
@@ -100,17 +100,13 @@ Training has three stages. First, real codec caches are generated for fixed trai
 
 ### 4.1 Dataset, task, and codecs
 
-The implemented primary task is Kinetics-400 action recognition [8] with a frozen video analyzer. Each example contains 16 RGB frames sampled at stride 2 and resized/cropped to 128×128. Official train/validation identities should be used; when unavailable, the code generates one deterministic stratified validation split and persists its seed. The final scientific forward path uses FFmpeg `libx264` and `libx265` at QP {30,32,35,37,40,42,45}. Hardware-codec measurements on Jetson form a separate implementation stratum.
+The implemented primary task is Kinetics-400 action recognition [8] with a frozen video analyzer. Each example contains 16 RGB frames sampled at stride 2 and resized/cropped to 128×128. Official train/validation identities should be used; when unavailable, the code generates one deterministic stratified validation split and persists its seed. The final scientific forward path uses FFmpeg `libx264` and `libx265` at QP {30,32,35,37,40,42,45}.
 
 For every video, codec, and QP, evaluation writes an anchor, pre-only, and full-sandwich record with a stable sample identity. BPP is computed from elementary-stream bytes divided by T×H×W. Machine metrics are Top-1 and Top-5. Human/reconstruction metrics are PSNR, validated MS-SSIM, LPIPS, and VMAF [9] where available. The primary aggregate PSNR is computed from the mean video MSE, not by averaging PSNR values in decibels. Task BD-rate uses Top-1 as quality; perceptual BD-rate is reported separately. The primary BD-rate uses a monotone quality envelope, while the raw-curve result is retained as a sensitivity diagnostic. A BD-rate is undefined when the selected curves lack sufficient distinct points or an overlapping quality range.
 
 ### 4.2 Ablations and uncertainty
 
 Required ablations remove the postprocessor, DINO loss, adaptive-DCT loss, or QP-FiLM; replace Video Swin with the retained CNN preprocessor; route the machine before postprocessing; and replace real-forward training with proxy-forward training. Experiments use three seeds. Paired bootstrap resampling operates over video identity with 10,000 samples and a fixed seed. The valid-resample count must accompany the 95% interval when some resampled BD-rate curves are undefined.
-
-### 4.3 Jetson Orin NX protocol
-
-The pre/post networks are exported independently to ONNX and converted to TensorRT at a recorded precision. The H.264/H.265 encoder and decoder remain NVIDIA hardware codec elements. The report must identify the exact Orin NX memory variant, carrier board, JetPack/L4T, CUDA, cuDNN, TensorRT, power mode, clocks, thermal range, codec parameters, precision, and engine hashes. After at least 30 warm-up iterations, at least 200 iterations measure pre, encode, decode, post, task, and end-to-end p50/p95 latency. `tegrastats` provides total-module VDD_IN samples; results include power and energy/frame rather than inferring watts from latency.
 
 ## 5. Results
 
@@ -127,12 +123,6 @@ Table 1. Primary result schema; all V10 cells are intentionally unmeasured.
 | H.265 | Pre-only | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED |
 | H.265 | Sandwich | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED |
 
-Table 2. Jetson result schema; all cells are intentionally unmeasured.
-
-| Precision | Pre p50/p95 (ms) | Codec p50/p95 (ms) | Post p50/p95 (ms) | End-to-end FPS | Peak memory | VDD_IN (W) | Energy/frame |
-|---|---|---|---|---:|---:|---:|---:|
-| FP16 | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED |
-
 The source papers report useful context: Lu et al. [1] report approximately −20.3% versus −14.6% in their real-forward and proxy-forward image configurations; Zhao et al. [3] report more than 15% video bitrate saving; RPP [4] reports 16.27% average bitrate saving; and Sandwiched Compression [2] reports gains up to 30% in selected adaptations. These results have different tasks, codecs, data, and objectives. They are not targets, baselines, or substitutes for V10 measurements.
 
 ## 6. Discussion
@@ -145,15 +135,15 @@ The two-sided sandwich is also a system contract: the decoder side must have the
 
 ## 7. Limitations, Ethics, and Reproducibility
 
-This release has not been trained or measured on Kinetics-400 or Jetson Orin NX in the supplied environment. It must not be advertised as achieving a bitrate, accuracy, real-time, or power improvement. Action recognition is implemented; video tracking is not. The compact MS-SSIM function is suitable as a differentiable training term but not as a standards-grade reporting implementation. TensorRT conversion is version dependent and must be verified on the target JetPack release.
+This release has not been trained or measured on Kinetics-400 in the supplied environment. It must not be advertised as achieving a bitrate or accuracy improvement. Action recognition is implemented; video tracking is not. The compact MS-SSIM function is suitable as a differentiable training term but not as a standards-grade reporting implementation.
 
 Task-aware compression may discard information that is irrelevant to a selected model but meaningful to people, future models, safety review, accessibility, or forensic analysis. Human-oriented losses reduce but do not eliminate this risk. Deployments should retain an auditable policy for source retention, downstream task changes, and demographic/per-class failure analysis. Kinetics and other video datasets also require license, privacy, and content review.
 
-The repository contains source code, tests, an experiment protocol, a Jetson runbook, and claim/source manifests. The current test suite verifies identity initialization, codec freezing, real-forward equality, proxy-gradient flow, DINO freezing with input gradients, DCT gradients, metric behavior, inherited proxy invariants, and the V10 checkpoint/evaluation regressions.
+The repository contains source code, tests, an experiment protocol, and claim/source manifests. The current test suite verifies identity initialization, codec freezing, real-forward equality, proxy-gradient flow, DINO freezing with input gradients, DCT gradients, metric behavior, inherited proxy invariants, and the V10 checkpoint/evaluation regressions.
 
 ## 8. Conclusion
 
-We introduced a standards-compatible adaptive video codec sandwich for VCM. The design combines local spatiotemporal preprocessing, exact real-codec forward values, proxy-only gradients, lightweight postprocessing, task-specific and DINOv2 semantic supervision, and human-oriented perceptual constraints. Its deployment graph isolates pre/post TensorRT engines from a frozen hardware codec and its protocol makes rate–accuracy and edge-efficiency claims falsifiable. The implementation is ready for the missing empirical stage; the manuscript remains a pre-results draft until the declared experiments and human review are complete.
+We introduced a standards-compatible adaptive video codec sandwich for VCM. The design combines local spatiotemporal preprocessing, exact real-codec forward values, proxy-only gradients, lightweight postprocessing, task-specific and DINOv2 semantic supervision, and human-oriented perceptual constraints. Its protocol makes rate-accuracy and reconstruction-quality claims falsifiable. The implementation is ready for the missing empirical stage; the manuscript remains a pre-results draft until the declared experiments and human review are complete.
 
 ## References
 

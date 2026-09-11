@@ -2,7 +2,7 @@
 \usepackage{amsmath,amssymb,booktabs,array,url,xcolor}
 \usepackage[hidelinks]{hyperref}
 \newcommand{\stopgrad}{\operatorname{sg}}
-\title{Adaptive Video Preprocessing Techniques for Optimizing Video Coding for Machines (VCM) on NVIDIA Jetson Orin NX}
+\title{Adaptive Video Preprocessing Techniques for Optimizing Video Coding for Machines (VCM)}
 \author{\IEEEauthorblockN{Anonymous Author(s)}\\\IEEEauthorblockA{Identities pending human approval}}
 
 \begin{document}
@@ -12,11 +12,11 @@
 \end{center}
 
 \begin{abstract}
-Video coding for machines must preserve features required by downstream analysis while respecting bitrate, human-viewing quality, and edge-compute constraints. We present a standards-compatible framework that places trainable QP-conditioned neural pre- and postprocessors around a frozen H.264/AVC or H.265/HEVC codec. Real decoded pixels and measured bitstream BPP are used in every forward pass, while a frozen predictive-entropy proxy supplies only the backward Jacobian. The objective combines rate, a frozen task loss, DINOv2 feature consistency, and human-oriented spatial, temporal, perceptual, and adaptive-DCT terms. The wrappers export independently to TensorRT around the hardware codec on NVIDIA Jetson Orin NX. This paper defines the method and locked evaluation protocol; no new empirical result is claimed because the required dataset, checkpoint, and target hardware were unavailable at manuscript generation time.
+Video coding for machines must preserve features required by downstream analysis while respecting bitrate and human-viewing quality. We present a standards-compatible framework that places trainable QP-conditioned neural pre- and postprocessors around a frozen H.264/AVC or H.265/HEVC codec. Real decoded pixels and measured bitstream BPP are used in every forward pass, while a frozen predictive-entropy proxy supplies only the backward Jacobian. The objective combines rate, a frozen task loss, DINOv2 feature consistency, and human-oriented spatial, temporal, perceptual, and adaptive-DCT terms. This paper defines the method and locked evaluation protocol; no new empirical result is claimed because the required dataset and checkpoint were unavailable at manuscript generation time.
 \end{abstract}
 
 \begin{IEEEkeywords}
-video coding for machines, neural preprocessing, standard codec, straight-through estimation, DINOv2, FiLM, Jetson Orin NX
+video coding for machines, neural preprocessing, standard codec, straight-through estimation, DINOv2, FiLM
 \end{IEEEkeywords}
 
 \section{Introduction}
@@ -24,7 +24,7 @@ Conventional H.264/AVC and H.265/HEVC codecs are standardized and widely hardwar
 
 Lu et al. learn a quantization-adaptive image preprocessor and identify the benefit of real-codec forward values with proxy backpropagation \cite{lu2024preprocessing}. Sandwiched Compression jointly trains neural wrappers around a standard codec \cite{guleryuz2024sandwiched}. Zhao et al. introduce video-specific task-aware preprocessing and a virtual codec \cite{zhao2025video}; RPP contributes rate-perception and adaptive-DCT ideas \cite{ma2023rpp}. We combine these directions with DINOv2 semantic features \cite{oquab2023dinov2}, FiLM QP conditioning \cite{perez2018film}, and local Video Swin attention \cite{liu2022video}.
 
-Our contributions are: (i) identity-initialized QP-FiLM Video Swin Lite and FiLM-3D wrappers; (ii) real H.264/H.265 forward values and proxy-only gradients for both pixels and rate; (iii) a supervised, DINOv2, perceptual, temporal, and adaptive-DCT objective; and (iv) a deployment and measurement contract for Jetson Orin NX.
+Our contributions are: (i) identity-initialized QP-FiLM Video Swin Lite and FiLM-3D wrappers; (ii) real H.264/H.265 forward values and proxy-only gradients for both pixels and rate; (iii) a supervised, DINOv2, perceptual, temporal, and adaptive-DCT objective; and (iv) a locked paired evaluation and artifact protocol for real H.264/H.265 operating points.
 
 \section{Method}
 For source clip $x$ and quantization parameter $q$, the preprocessor produces $z=P_\theta(x,q)$. The frozen codec gives $y=C_q(z)$ and elementary-stream rate $r$. The postprocessor outputs $\hat{x}=R_\phi(y,q)$. The task analyzer consumes $\hat{x}$ by default; an ablation consumes $y$.
@@ -48,8 +48,6 @@ $\mathcal L_{\mathrm{DINO}}$ is cosine distance between frozen source/restored C
 The implemented primary task is Kinetics-400 action recognition \cite{kay2017kinetics}. The locked protocol uses 16 frames at stride 2 and $128\times128$ spatial size. Scientific evaluation uses real FFmpeg \texttt{libx264} and \texttt{libx265} at QP $\{30,32,35,37,40,42,45\}$. Every video/QP produces paired anchor, pre-only, and sandwich rows. BPP is elementary-stream bits divided by $THW$.
 
 We report Top-1/Top-5, PSNR, externally validated MS-SSIM, LPIPS, and VMAF where available, plus task and perceptual BD-rate. Aggregate PSNR is derived from mean video MSE. Primary BD-rate uses a monotone quality envelope, with the raw-curve result retained as a sensitivity diagnostic; undefined BD-rates are not extrapolated. The default checkpoint rule falls back to validation loss only before the first valid task BD-rate and never lets a later undefined estimate replace a valid incumbent. Required ablations remove postprocessing, DINO, adaptive DCT, or QP-FiLM; replace Video Swin with CNN; move the task tap before postprocessing; and replace real-forward training with proxy-forward training. Three seeds and paired video-level bootstrap intervals with 10,000 resamples, stable video identities, and valid/invalid resample counts are required.
-
-On Jetson Orin NX, pre/post models are separate ONNX/TensorRT engines around NVIDIA hardware encoder/decoder elements. The report records module variant, carrier, JetPack/L4T, CUDA, cuDNN, TensorRT, precision, power mode, clocks, codec configuration, and hashes. At least 30 warm-up and 200 timed iterations produce component/end-to-end p50/p95 latency, throughput, peak memory, VDD\_IN power, and energy/frame.
 
 \section{Results Status}
 No new empirical result is available in the supplied workspace. Table~\ref{tab:results} is intentionally a result schema. Prior-work values---including the $-20.3\%$ and $-14.6\%$ image-codec ablation of Lu et al.---must not populate this table.
@@ -75,10 +73,10 @@ H.265 & Sandwich & NM & NM & NM\\
 \section{Discussion and Limitations}
 Exact forward values remove a major train--deployment mismatch but do not make the proxy Jacobian correct, motivating a gradient-direction audit. Joint postprocessing can improve human reconstruction while shifting the analyzer input; reporting task taps before and after restoration exposes this trade-off. DINOv2 may reduce analyzer overfitting but is framewise, and adaptive DCT may discard subtle task cues. Both require ablation.
 
-This release has not been trained or measured on Kinetics-400 or Jetson Orin NX. Action recognition is implemented; tracking is not. TensorRT compatibility depends on the target release. Task-aware compression can remove information important to people, future tasks, safety review, or forensics, so deployment requires retention, privacy, and per-class failure policies.
+This release has not been trained or measured on Kinetics-400. Action recognition is implemented; tracking is not. Task-aware compression can remove information important to people, future tasks, safety review, or forensics, so deployment requires retention, privacy, and per-class failure policies.
 
 \section{Conclusion}
-We define an auditable standard-codec video sandwich for joint machine, human, and edge-device objectives. The implementation is ready for the empirical stage, while its claims remain deliberately pre-results until the locked experiments and human review are complete.
+We define an auditable standard-codec video sandwich for joint machine and human objectives. The implementation is ready for the empirical stage, while its claims remain deliberately pre-results until the locked experiments and human review are complete.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}

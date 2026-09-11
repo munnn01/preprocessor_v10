@@ -11,7 +11,7 @@ python paper/build_pdf.py
 Before any submission:
 
 1. Run the locked protocol in `docs/EXPERIMENT_PROTOCOL.md`.
-2. Populate both result tables only from archived per-video/Jetson artifacts.
+2. Populate the result table only from archived per-video real-codec artifacts.
 3. Update `evidence/claims.csv` and `evidence/manuscript_manifest.json`.
 4. Replace anonymous authors only after every contributor approves order, affiliations, acknowledgments, funding, and conflicts.
 5. Perform human source, statistical, visual, and venue-format review.

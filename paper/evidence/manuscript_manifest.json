@@ -1,15 +1,17 @@
 {
-  "title": "Adaptive Video Preprocessing Techniques for Optimizing Video Coding for Machines (VCM) on NVIDIA Jetson Orin NX",
+  "title": "Adaptive Video Preprocessing Techniques for Optimizing Video Coding for Machines (VCM)",
   "status": "pre-results-draft-do-not-submit",
   "authors": "pending human approval",
-  "generated_on": "2026-09-10",
+  "generated_on": "2026-09-12",
   "implemented_task": "Kinetics-style action recognition",
-  "not_implemented": ["GOT-10k tracking adapter", "trained V10 checkpoint", "Jetson TensorRT runtime integration"],
-  "missing_empirical_inputs": ["dataset", "trained proxy/wrapper checkpoint", "NVIDIA Jetson Orin NX access"],
+  "not_implemented": ["GOT-10k tracking adapter", "trained V10 checkpoint"],
+  "missing_empirical_inputs": ["dataset", "trained proxy/wrapper checkpoint"],
   "result_policy": "Populate Results only from artifacts satisfying docs/EXPERIMENT_PROTOCOL.md and then obtain human co-author approval.",
   "automated_verification": {
     "command": "python -m pytest -q",
-    "expected_tests_after_packaging": 89,
-    "status": "89_passed_2_nonfatal_warnings"
+    "collected_tests": 104,
+    "observed_passed": 103,
+    "observed_skipped": 1,
+    "status": "reached 100 percent with no assertion failure; one real-codec test skipped because FFmpeg was unavailable; local Windows process was interrupted after a PyTorch teardown hang"
   }
 }

@@ -14,7 +14,7 @@ class FrozenDinoV2(nn.Module):
 
     A model may be injected for offline tests.  Production runs can use either
     an already cloned local DINOv2 repository or the official torch-hub entry.
-    DINOv2 is a training/evaluation teacher and is not exported to Jetson.
+    DINOv2 is a training/evaluation teacher and is not part of the trainable wrappers.
     """
 
     def __init__(

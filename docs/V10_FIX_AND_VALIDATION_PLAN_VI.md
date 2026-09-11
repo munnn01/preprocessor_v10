@@ -44,7 +44,7 @@ bootstrap.json
 codec_commands.json
 ```
 
-Run chỉ được đánh dấu reportable khi không dùng `--limit`, checkpoint format V10, ít nhất 10.000 bootstrap draw và Git sạch trước khi tạo output. Artifact Jetson được bổ sung sau trên đúng checkpoint hash.
+Run chỉ được đánh dấu reportable khi không dùng `--limit`, checkpoint format V10, ít nhất 10.000 bootstrap draw và Git sạch trước khi tạo output.
 
 ## 4. Proxy gate
 
@@ -110,7 +110,6 @@ Dừng nếu real BPP tăng có hệ thống trong khi proxy BPP giảm, clamp v
 12. Khóa code/config/checkpoint policy.
 13. Held-out test đúng một lần.
 14. Bootstrap 10.000 draw.
-15. Jetson latency, memory và power trên cùng checkpoint hash.
 
 ## 8. Lệnh kiểm định tối thiểu
 

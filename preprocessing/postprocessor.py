@@ -53,7 +53,7 @@ class _FiLM3D(nn.Module):
 
 
 class _SeparableResidual3D(nn.Module):
-    """Depthwise-separable 3-D residual block suitable for Jetson deployment."""
+    """Compact depthwise-separable 3-D residual block."""
 
     def __init__(self, channels: int, condition_channels: int) -> None:
         super().__init__()

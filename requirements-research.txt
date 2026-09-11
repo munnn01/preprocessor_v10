@@ -1,4 +1,3 @@
 -r requirements.txt
 lpips>=0.1.4
-onnx>=1.16
 reportlab>=4.0

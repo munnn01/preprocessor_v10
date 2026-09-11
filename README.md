@@ -1,4 +1,4 @@
-# Adaptive Video Preprocessing Techniques for Optimizing Video Coding for Machines (VCM) on NVIDIA Jetson Orin NX
+# Adaptive Video Preprocessing Techniques for Optimizing Video Coding for Machines (VCM)
 
 Research implementation for a standards-compatible video codec sandwich:
 
@@ -17,9 +17,9 @@ decoded = proxy_decoded + (real_decoded - proxy_decoded).detach()
 bpp = proxy_bpp + (real_bpp - proxy_bpp).detach()
 ```
 
-This is the video/edge-device extension of the forward-real-codec strategy in Lu et al. The repository also combines joint neural pre/post wrappers from Sandwiched Compression, an RPP-inspired adaptive-DCT perceptual prior, frozen DINOv2 feature preservation, FiLM QP conditioning, the local virtual-video-codec design, and the earlier `proxy_v3`, `proxy_v4`, `film_deeper3d`, and `video_swin` implementations.
+This is the video extension of the forward-real-codec strategy in Lu et al. The repository also combines joint neural pre/post wrappers from Sandwiched Compression, an RPP-inspired adaptive-DCT perceptual prior, frozen DINOv2 feature preservation, FiLM QP conditioning, the local virtual-video-codec design, and the earlier `proxy_v3`, `proxy_v4`, `film_deeper3d`, and `video_swin` implementations.
 
-> **Scientific status (11 September 2026, V10):** the training and evaluation pipeline has been hardened for exact resume, explicit checkpoint fallback, proxy-saturation gates, paired bootstrap, and result provenance. No Kinetics checkpoint, held-out real-codec result, or Jetson Orin NX measurement was available in the workspace. The paper remains an explicitly marked **pre-results manuscript draft**, not a submission-ready empirical paper.
+> **Scientific status (12 September 2026, V10):** the training and evaluation pipeline has been hardened for exact resume, explicit checkpoint fallback, proxy-saturation gates, paired bootstrap, and result provenance. No Kinetics checkpoint or held-out real-codec result was available in the workspace. The paper remains an explicitly marked **pre-results manuscript draft**, not a submission-ready empirical paper.
 
 ## What is implemented
 
@@ -28,15 +28,13 @@ This is the video/edge-device extension of the forward-real-codec strategy in Lu
 - Frozen H.264/H.265 forward path and frozen predictive-entropy codec proxy backward path.
 - Composite VCM objective: real rate, supervised task loss, frozen DINOv2 semantic loss, Charbonnier, compact three-scale MS-SSIM, optional LPIPS, temporal-gradient consistency, and adaptive block-DCT sparsification.
 - Real-codec evaluation of `anchor`, `pre_only`, and full `sandwich` at every codec/QP point, including task/PSNR/MS-SSIM BD-rate.
-- Separate ONNX exports for pre/post deployment around Jetson hardware codecs.
-- Reproducible PyTorch latency benchmark plus a parser for `tegrastats` power logs.
 - Unit and integration tests for the real-forward/proxy-backward identity and gradient invariants.
 - V10 checkpoint policy: `best.pt` follows the requested metric; task BD-rate uses validation-loss fallback only until the first valid BD-rate is observed.
 - Exact V10 resume state including optimizer, AMP scaler, Python/NumPy/PyTorch/CUDA RNG, QP RNG, best-metric state, and locked configuration checks.
 - Paired 10,000-sample video bootstrap, one declared PSNR estimator, raw/envelope RD diagnostics, codec command manifests, hashes, and environment artifacts.
 - Proxy hard-clamp diagnostics and an auditable saturation gate before wrapper checkpoints are selected.
 
-The frozen analyzer and DINOv2 are teachers/evaluators; they are not included in the deployed pre/post TensorRT engines unless an application specifically requires on-device task inference.
+The frozen analyzer and DINOv2 are teachers/evaluators; they are not part of the trainable pre/post wrappers.
 
 ## Install
 
@@ -51,7 +49,7 @@ python -m venv .venv
 
 The precomputed cache is valid for proxy supervision and the fixed anchor only. It cannot replace the real FFmpeg forward pass after the trainable preprocessor, because that input changes after every optimizer update.
 
-On Windows, use `.venv\Scripts\pip.exe`. LPIPS and ONNX are optional research/export dependencies. DINOv2 can be loaded from an already cloned official repository by passing `--dino-repo /path/to/dinov2`; otherwise PyTorch Hub needs network access on the first run.
+On Windows, use `.venv\Scripts\pip.exe`. LPIPS is an optional research dependency. DINOv2 can be loaded from an already cloned official repository by passing `--dino-repo /path/to/dinov2`; otherwise PyTorch Hub needs network access on the first run.
 
 ## Reproducible workflow
 
@@ -120,30 +118,11 @@ python evaluate_sandwich.py \
 
 The command writes `per_video_metrics.csv`, `summary.json`, `bd_rate.json`, `bootstrap.json`, checkpoint/environment hashes, Git state, and the exact FFmpeg command manifest. Negative BD-rate means bitrate saving at equal quality/accuracy. Omit `--limit`, use at least 10,000 bootstrap samples, and evaluate a clean V10 commit for a run to be marked reportable.
 
-### 5. Export and benchmark on Jetson Orin NX
-
-```bash
-python export_jetson.py \
-  --checkpoint checkpoints/adaptive_sandwich/best.pt \
-  --output-dir artifacts/onnx
-
-python benchmark_jetson.py \
-  --checkpoint checkpoints/adaptive_sandwich/best.pt \
-  --warmup 30 --iterations 200 \
-  --output outputs/jetson_benchmark.json
-
-python tools/parse_tegrastats.py \
-  --input outputs/tegrastats.log \
-  --output outputs/tegrastats_summary.json
-```
-
-See [`docs/JETSON_RUNBOOK.md`](docs/JETSON_RUNBOOK.md) for TensorRT conversion, hardware-codec checks, power-mode logging, and reporting requirements.
-
 ## Verification
 
 ```bash
 python -m pytest -q
-python -m compileall preprocessing train_sandwich.py evaluate_sandwich.py export_jetson.py benchmark_jetson.py
+python -m compileall preprocessing train_sandwich.py evaluate_sandwich.py
 ```
 
 V10 adds regression coverage for checkpoint fallback, explicit metric selection, optimizer selection, method-aware bootstrap, PSNR consistency, raw-curve sensitivity, codec command capture, and proxy saturation. CI and a local environment with PyTorch are the authoritative verification paths.

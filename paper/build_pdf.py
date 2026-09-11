@@ -232,7 +232,7 @@ def decorate(canvas, document) -> None:
         canvas.line(18 * mm, height - 14 * mm, width - 18 * mm, height - 14 * mm)
         canvas.setFont(FONT, 7)
         canvas.setFillColor(GRAY)
-        canvas.drawString(18 * mm, height - 11 * mm, "Adaptive Video Preprocessing for VCM on Jetson Orin NX")
+        canvas.drawString(18 * mm, height - 11 * mm, "Adaptive Video Preprocessing for VCM")
         canvas.drawRightString(width - 18 * mm, height - 11 * mm, "PRE-RESULTS DRAFT")
     canvas.setFont(FONT, 7.5)
     canvas.setFillColor(GRAY)
@@ -245,7 +245,7 @@ def main() -> None:
         str(OUTPUT), pagesize=A4,
         leftMargin=18 * mm, rightMargin=18 * mm,
         topMargin=18 * mm, bottomMargin=18 * mm,
-        title="Adaptive Video Preprocessing Techniques for Optimizing Video Coding for Machines (VCM) on NVIDIA Jetson Orin NX",
+        title="Adaptive Video Preprocessing Techniques for Optimizing Video Coding for Machines (VCM)",
         author="Anonymous Author(s) — identities pending human approval",
         subject="Pre-results research manuscript",
     )

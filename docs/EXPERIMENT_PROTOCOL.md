@@ -7,7 +7,6 @@ This protocol is frozen before generating reportable results. Deviations must be
 - **RQ1:** Does the full sandwich reduce real H.264/H.265 bitrate at equal action-recognition accuracy relative to the unprocessed anchor?
 - **RQ2:** Does the postprocessor improve perceptual quality without erasing the machine-rate gain of the preprocessor?
 - **RQ3:** Which gains come from DINOv2, adaptive DCT, QP-FiLM, Video Swin, and real-forward/proxy-backward training?
-- **RQ4:** Is the deployed pre/codec/post path usable within a documented Orin NX latency, memory, and power envelope?
 
 ## Data and splits
 
@@ -24,8 +23,6 @@ GOT-10k tracking is a future extension and must not appear in the main empirical
 - Constant frame rate: record exact FPS; default 30.
 - Record FFmpeg build, codec library versions, pixel format, preset, GOP/key-frame settings, threads, and all emitted encoder arguments.
 - Compute BPP from the elementary-stream byte count divided by `T×H×W`; never use proxy BPP in a final result.
-
-Jetson deployment may use NVIDIA hardware codec elements. Treat hardware-codec results as a separate codec implementation and do not merge them with `libx264/libx265` curves.
 
 ## Training gates
 
@@ -58,28 +55,15 @@ Train B1 only as a controlled test of the forward mismatch identified by Lu et a
 
 ## Metrics
 
-Machine: Top-1 and Top-5 accuracy at every QP; task BD-rate with Top-1 as quality. Human/reconstruction: PSNR, a validated external MS-SSIM implementation, LPIPS, and VMAF where the toolchain is available. The primary PSNR operating point is `-10 log10(mean per-video MSE)`; per-video PSNR remains in the CSV for audit but may not be averaged into the primary curve. Rate: elementary-stream BPP. Complexity: parameters, model size, MACs where supported, p50/p95 latency, throughput, peak device memory, total module power, and energy/frame.
+Machine: Top-1 and Top-5 accuracy at every QP; task BD-rate with Top-1 as quality. Human/reconstruction: PSNR, a validated external MS-SSIM implementation, LPIPS, and VMAF where the toolchain is available. The primary PSNR operating point is `-10 log10(mean per-video MSE)`; per-video PSNR remains in the CSV for audit but may not be averaged into the primary curve. Rate: elementary-stream BPP. Complexity: parameters, model size, and MACs where supported.
 
 BD-rate is valid only over an overlapping quality interval with enough distinct points. Report `undefined` instead of extrapolating. The primary noisy-task curve uses the documented monotone Pareto envelope on both methods. Preserve every raw point and report a raw-curve sensitivity value; if the raw curve is not strictly monotone, report that sensitivity as `undefined`. Negative BD-rate denotes bitrate saving. Use paired bootstrap resampling by video (10,000 samples, fixed seed) for 95% intervals on aggregate metric differences and task BD-rate; if a resample has an invalid BD-rate curve, report valid count, invalid count, and valid fraction.
 
-## Jetson measurement
-
-Target: the exact NVIDIA Jetson Orin NX model under test (8 GB or 16 GB). Record module, carrier board, JetPack/L4T, CUDA, cuDNN, TensorRT, clocks, thermal state, power mode, ambient conditions, precision, input shape, and engine hashes.
-
-Use at least 30 warm-up iterations and 200 timed iterations. Synchronize CUDA around timing. Measure:
-
-- preprocessor, hardware encoder, hardware decoder, postprocessor, task analyzer, and full pipeline;
-- p50/p95 latency and end-to-end FPS;
-- peak memory;
-- `tegrastats` VDD_IN mean/median/p95 and energy per processed frame.
-
-Do not infer power from latency or desktop-GPU measurements. See `docs/JETSON_RUNBOOK.md`.
-
 ## Statistical reporting and stopping rule
 
-Primary endpoint: H.264 task BD-rate of A2 vs A0 on the held-out validation/test set. Secondary endpoints: H.265 task BD-rate, perceptual BD-rates, and Orin NX end-to-end latency/power.
+Primary endpoint: H.264 task BD-rate of A2 vs A0 on the held-out validation/test set. Secondary endpoints: H.265 task BD-rate and perceptual BD-rates.
 
-Report all seeds and both codecs. The method is considered supported only if the primary point estimate is negative, the paired 95% interval is reported, task accuracy does not collapse at the lowest-rate point, and the measured device budget is stated. A null or unfavorable result remains part of the manuscript; do not replace it with prior-work values.
+Report all seeds and both codecs. The method is considered supported only if the primary point estimate is negative, the paired 95% interval is reported, and task accuracy does not collapse at the lowest-rate point. A null or unfavorable result remains part of the manuscript; do not replace it with prior-work values.
 
 ## Result artifact contract
 
@@ -97,9 +81,6 @@ bd_rate.json
 bootstrap.json
 codec_commands.json
 checkpoint_sha256.txt
-jetson_benchmark.json
-tegrastats.log
-tegrastats_summary.json
 ```
 
 Only artifacts satisfying this contract may populate the manuscript's Results section.
