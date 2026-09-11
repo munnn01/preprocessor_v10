@@ -13,8 +13,8 @@ from torch.nn import functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, Subset
-from tqdm import tqdm
 from torchvision.models.video import R3D_18_Weights
+from tqdm import tqdm
 
 from preprocessing import StandardCodecProxy, StandardVideoCodec
 from preprocessing.data import (
@@ -34,7 +34,7 @@ from preprocessing.proxy_training import (
     rate_direction_loss,
     rate_fit_loss,
 )
-from preprocessing.standard_codec import require_ffmpeg
+from preprocessing.standard_codec import ffmpeg_version, require_ffmpeg
 from preprocessing.utils import AverageMeter, save_checkpoint, seed_everything
 
 
@@ -102,6 +102,7 @@ def parse_args() -> argparse.Namespace:
     optimization.add_argument("--audit-min-pair-direction-accuracy", type=float, default=0.60)
     optimization.add_argument("--audit-max-real-delta-percent", type=float, default=0.0)
     optimization.add_argument("--audit-min-real-down-fraction", type=float, default=0.55)
+    optimization.add_argument("--audit-max-proxy-clamp-fraction", type=float, default=0.05)
     optimization.add_argument("--init-checkpoint", help="load V4 proxy weights into a fresh run")
     optimization.add_argument("--weight-decay", type=float, default=1e-4)
     optimization.add_argument("--clip-grad", type=float, default=1.0)
@@ -132,9 +133,13 @@ def validate_cache(args: argparse.Namespace, dataset: PrecomputedCodecDataset) -
     codec = manifest["codec"]
     video = manifest["video"]
     expected = {
+        "cache_version": (int(manifest.get("version", 0)), 2),
         "codec": (codec["name"], args.codec),
+        "qps": (list(codec["qps"]), list(args.qps)),
         "fps": (float(codec["fps"]), float(args.fps)),
         "preset": (codec["preset"], args.preset),
+        "io_backend": (codec.get("io_backend"), args.codec_io),
+        "ffmpeg_threads": (int(codec.get("ffmpeg_threads", 0)), args.ffmpeg_threads),
         "frames": (int(video["frames"]), args.frames),
         "frame_stride": (int(video["frame_stride"]), args.frame_stride),
         "frame_size": (int(video["frame_size"]), args.frame_size),
@@ -146,6 +151,8 @@ def validate_cache(args: argparse.Namespace, dataset: PrecomputedCodecDataset) -
     ]
     if mismatches:
         raise ValueError("precomputed cache configuration mismatch: " + "; ".join(mismatches))
+    if not codec.get("ffmpeg_version"):
+        raise ValueError("precomputed cache has no FFmpeg version; rebuild it with V10")
 
 
 def make_loaders(args: argparse.Namespace) -> tuple[DataLoader, DataLoader]:
@@ -207,6 +214,28 @@ def make_loaders(args: argparse.Namespace) -> tuple[DataLoader, DataLoader]:
     )
 
 
+def _update_proxy_diagnostics(
+    meters: dict[str, AverageMeter],
+    diagnostics: dict[str, torch.Tensor],
+    qp_values: torch.Tensor,
+    qps: list[int],
+) -> None:
+    for name in (
+        "proxy_clamp_fraction",
+        "proxy_below_zero_fraction",
+        "proxy_above_one_fraction",
+    ):
+        per_sample = diagnostics.get(f"{name}_per_sample")
+        if per_sample is None:
+            continue
+        values = per_sample.detach().float().flatten()
+        meters[name].update(float(values.mean()), values.numel())
+        for qp in qps:
+            selected = values[qp_values == qp]
+            if selected.numel():
+                meters[f"qp{qp}_{name}"].update(float(selected.mean()), selected.numel())
+
+
 def run_epoch(
     loader: DataLoader,
     proxy: StandardCodecProxy,
@@ -227,6 +256,7 @@ def run_epoch(
         "loss", "reconstruction", "rate", "rate_delta", "rate_direction",
         "rate_mape_percent", "pair_direction_accuracy", "probe_real_delta_percent",
         "probe_proxy_down_fraction", "probe_real_down_fraction",
+        "proxy_clamp_fraction", "proxy_below_zero_fraction", "proxy_above_one_fraction",
     )
     names += tuple(
         f"qp{qp}_{metric}"
@@ -236,6 +266,8 @@ def run_epoch(
             "pair_direction_accuracy",
             "probe_real_delta_percent", "probe_proxy_down_fraction",
             "probe_real_down_fraction",
+            "proxy_clamp_fraction", "proxy_below_zero_fraction",
+            "proxy_above_one_fraction",
         )
     )
     meters = {name: AverageMeter() for name in names}
@@ -271,6 +303,7 @@ def run_epoch(
                 qp_display = str(qp)
             with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
                 proxy_reconstruction, proxy_bpp = proxy(clips, qp)
+            base_diagnostics = dict(getattr(proxy, "last_diagnostics", {}))
             reconstruction_loss = F.l1_loss(
                 proxy_reconstruction.float(), real_reconstruction.float()
             )
@@ -283,6 +316,7 @@ def run_epoch(
             if qp_values.numel() == 1:
                 qp_values = qp_values.expand(clips.shape[0])
             metric_qps = qp_values
+            _update_proxy_diagnostics(meters, base_diagnostics, qp_values, args.qps)
             if args.pair_strengths is not None:
                 if real_codec is None:
                     raise ValueError("paired proxy training requires a real codec")
@@ -300,6 +334,12 @@ def run_epoch(
                     )
                 with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
                     predicted_reconstruction, predicted_bpp = proxy(variant, qp_values)
+                _update_proxy_diagnostics(
+                    meters,
+                    dict(getattr(proxy, "last_diagnostics", {})),
+                    qp_values,
+                    args.qps,
+                )
                 reconstruction_loss = 0.5 * (
                     reconstruction_loss
                     + F.l1_loss(predicted_reconstruction.float(), variant_reconstruction.float())
@@ -417,6 +457,8 @@ def main() -> None:
         raise ValueError("--audit-min-pair-direction-accuracy must be in [0, 1]")
     if not 0 <= args.audit_min_real_down_fraction <= 1:
         raise ValueError("--audit-min-real-down-fraction must be in [0, 1]")
+    if not 0 <= args.audit_max_proxy_clamp_fraction <= 1:
+        raise ValueError("--audit-max-proxy-clamp-fraction must be in [0, 1]")
     if args.smoke_test:
         args.epochs = 1
     if args.precomputed_root and (args.data_root or args.train_dir or args.val_dir):
@@ -448,6 +490,33 @@ def main() -> None:
     seed_everything(args.seed)
     device = torch.device(args.device)
     train_loader, val_loader = make_loaders(args)
+    if args.precomputed_root:
+        cached_codec = train_loader.dataset.manifest["codec"]
+        proxy_codec_config = {
+            "codec": cached_codec["name"],
+            "qps": list(cached_codec["qps"]),
+            "fps": float(cached_codec["fps"]),
+            "preset": cached_codec["preset"],
+            "io_backend": cached_codec["io_backend"],
+            "codec_workers": int(cached_codec.get("codec_workers", 1)),
+            "ffmpeg_threads": int(cached_codec["ffmpeg_threads"]),
+            "ffmpeg": cached_codec.get("ffmpeg", args.ffmpeg),
+            "ffmpeg_version": cached_codec["ffmpeg_version"],
+            "cache_version": int(train_loader.dataset.manifest["version"]),
+        }
+    else:
+        proxy_codec_config = {
+            "codec": args.codec,
+            "qps": list(args.qps),
+            "fps": args.fps,
+            "preset": args.preset,
+            "io_backend": args.codec_io,
+            "codec_workers": args.codec_workers,
+            "ffmpeg_threads": args.ffmpeg_threads,
+            "ffmpeg": args.ffmpeg,
+            "ffmpeg_version": ffmpeg_version(args.ffmpeg),
+            "cache_version": None,
+        }
     proxy = StandardCodecProxy(
         hidden_channels=args.hidden_channels,
         latent_channels=args.latent_channels,
@@ -557,6 +626,7 @@ def main() -> None:
             min_pair_direction_accuracy=args.audit_min_pair_direction_accuracy,
             max_real_delta_percent=args.audit_max_real_delta_percent,
             min_real_down_fraction=args.audit_min_real_down_fraction,
+            max_proxy_clamp_fraction=args.audit_max_proxy_clamp_fraction,
         )
         print(
             f"[audit] feasible={proxy_audit['feasible']} "
@@ -566,12 +636,7 @@ def main() -> None:
             "epoch": epoch,
             "proxy": proxy.state_dict(),
             "proxy_config": proxy.config,
-            "codec_config": {
-                "codec": args.codec,
-                "qps": list(args.qps),
-                "fps": args.fps,
-                "preset": args.preset,
-            },
+            "codec_config": proxy_codec_config,
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),

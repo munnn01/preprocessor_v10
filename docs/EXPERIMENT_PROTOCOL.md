@@ -31,9 +31,9 @@ Jetson deployment may use NVIDIA hardware codec elements. Treat hardware-codec r
 
 1. Build deterministic real-codec caches independently for training and validation.
 2. Train one proxy per codec configuration family.
-3. Require finite losses, frozen proxy parameters, reconstruction correlation, BPP rank/correlation, and a positive success rate for a proxy-rate descent step reducing real BPP.
+3. Require finite losses, frozen proxy parameters, reconstruction correlation, per-QP BPP rank/error checks, a positive success rate for a proxy-rate descent step reducing real BPP, and mean proxy hard-clamp fraction no greater than the predeclared 5% gate.
 4. Only after the proxy audit passes, train the pre/post wrappers.
-5. Select checkpoints by validation task BD-rate when defined; otherwise use the predeclared validation loss and disclose the fallback.
+5. Select checkpoints by validation task BD-rate when defined. Before the first valid task BD-rate only, use the best validation loss as an explicitly recorded fallback. Once any valid BD-rate exists, an undefined value may not replace it. Persist the selection metric, value, epoch, and fallback status in every checkpoint.
 6. Never tune hyperparameters on the held-out test set.
 
 All trainable wrappers start as identity maps. Use three seeds for reportable means and dispersion. Persist `args`, seed, git commit, checkpoint hashes, environment versions, and validation metrics in each run directory.
@@ -58,9 +58,9 @@ Train B1 only as a controlled test of the forward mismatch identified by Lu et a
 
 ## Metrics
 
-Machine: Top-1 and Top-5 accuracy at every QP; task BD-rate with Top-1 as quality. Human/reconstruction: PSNR, a validated external MS-SSIM implementation, LPIPS, and VMAF where the toolchain is available. Rate: elementary-stream BPP. Complexity: parameters, model size, MACs where supported, p50/p95 latency, throughput, peak device memory, total module power, and energy/frame.
+Machine: Top-1 and Top-5 accuracy at every QP; task BD-rate with Top-1 as quality. Human/reconstruction: PSNR, a validated external MS-SSIM implementation, LPIPS, and VMAF where the toolchain is available. The primary PSNR operating point is `-10 log10(mean per-video MSE)`; per-video PSNR remains in the CSV for audit but may not be averaged into the primary curve. Rate: elementary-stream BPP. Complexity: parameters, model size, MACs where supported, p50/p95 latency, throughput, peak device memory, total module power, and energy/frame.
 
-BD-rate is valid only over an overlapping quality interval with enough distinct points. Report `undefined` instead of extrapolating. Negative BD-rate denotes bitrate saving. Use paired bootstrap resampling by video (10,000 samples, fixed seed) for 95% intervals on aggregate metric differences and task BD-rate; if a resample has an invalid BD-rate curve, report the valid-resample count.
+BD-rate is valid only over an overlapping quality interval with enough distinct points. Report `undefined` instead of extrapolating. The primary noisy-task curve uses the documented monotone Pareto envelope on both methods. Preserve every raw point and report a raw-curve sensitivity value; if the raw curve is not strictly monotone, report that sensitivity as `undefined`. Negative BD-rate denotes bitrate saving. Use paired bootstrap resampling by video (10,000 samples, fixed seed) for 95% intervals on aggregate metric differences and task BD-rate; if a resample has an invalid BD-rate curve, report valid count, invalid count, and valid fraction.
 
 ## Jetson measurement
 
@@ -87,7 +87,9 @@ Each final run directory must contain:
 
 ```text
 args.json / checkpoint metadata
+checkpoint_metadata.json
 git_commit.txt
+git_state.json
 environment.txt
 per_video_metrics.csv
 summary.json

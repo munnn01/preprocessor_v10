@@ -94,7 +94,7 @@ The normalized rate term prevents high-rate QPs from dominating merely by scale.
 
 ### 3.4 Training and checkpoint selection
 
-Training has three stages. First, real codec caches are generated for fixed train/validation samples and QPs. Second, the predictive proxy is distilled against decoded pixels and BPP, with paired rate-delta supervision and real-codec gradient probes. Third, the pre/post wrappers are optimized while all other networks remain frozen. Checkpoints are selected using validation task BD-rate when mathematically defined; otherwise the declared validation loss is used and the fallback is logged.
+Training has three stages. First, real codec caches are generated for fixed train/validation samples and QPs. Second, the predictive proxy is distilled against decoded pixels and BPP, with paired rate-delta supervision and real-codec gradient probes. Third, the pre/post wrappers are optimized while all other networks remain frozen. The default checkpoint rule uses validation loss only until the first mathematically valid task BD-rate is observed. That first valid estimate replaces the fallback checkpoint; thereafter an undefined BD-rate cannot replace a valid incumbent. The checkpoint stores the optimizer, scaler, selection state, random-number-generator states, proxy hash, and codec configuration so a V10 resume reproduces the interrupted trajectory rather than silently restarting parts of it.
 
 ## 4. Experimental Protocol
 
@@ -102,7 +102,7 @@ Training has three stages. First, real codec caches are generated for fixed trai
 
 The implemented primary task is Kinetics-400 action recognition [8] with a frozen video analyzer. Each example contains 16 RGB frames sampled at stride 2 and resized/cropped to 128×128. Official train/validation identities should be used; when unavailable, the code generates one deterministic stratified validation split and persists its seed. The final scientific forward path uses FFmpeg `libx264` and `libx265` at QP {30,32,35,37,40,42,45}. Hardware-codec measurements on Jetson form a separate implementation stratum.
 
-For every video, codec, and QP, evaluation writes an anchor, pre-only, and full-sandwich record. BPP is computed from elementary-stream bytes divided by T×H×W. Machine metrics are Top-1 and Top-5. Human/reconstruction metrics are PSNR, validated MS-SSIM, LPIPS, and VMAF [9] where available. Task BD-rate uses Top-1 as quality; perceptual BD-rate is reported separately. A BD-rate is undefined when the curves lack sufficient distinct points or an overlapping quality range.
+For every video, codec, and QP, evaluation writes an anchor, pre-only, and full-sandwich record with a stable sample identity. BPP is computed from elementary-stream bytes divided by T×H×W. Machine metrics are Top-1 and Top-5. Human/reconstruction metrics are PSNR, validated MS-SSIM, LPIPS, and VMAF [9] where available. The primary aggregate PSNR is computed from the mean video MSE, not by averaging PSNR values in decibels. Task BD-rate uses Top-1 as quality; perceptual BD-rate is reported separately. The primary BD-rate uses a monotone quality envelope, while the raw-curve result is retained as a sensitivity diagnostic. A BD-rate is undefined when the selected curves lack sufficient distinct points or an overlapping quality range.
 
 ### 4.2 Ablations and uncertainty
 
@@ -114,9 +114,9 @@ The pre/post networks are exported independently to ONNX and converted to Tensor
 
 ## 5. Results
 
-No V9 empirical result is available in the present workspace. Table 1 is a schema, not a result table. It must be populated only from held-out real-codec artifacts satisfying the locked protocol.
+No V10 empirical result is available in the present workspace. Table 1 is a schema, not a result table. It must be populated only from held-out real-codec artifacts satisfying the locked protocol.
 
-Table 1. Primary result schema; all V9 cells are intentionally unmeasured.
+Table 1. Primary result schema; all V10 cells are intentionally unmeasured.
 
 | Codec | Method | Task BD-rate (%) | PSNR BD-rate (%) | MS-SSIM BD-rate (%) | Top-1 at lowest rate | 95% CI |
 |---|---|---:|---:|---:|---:|---|
@@ -133,7 +133,7 @@ Table 2. Jetson result schema; all cells are intentionally unmeasured.
 |---|---|---|---|---:|---:|---:|---:|
 | FP16 | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED |
 
-The source papers report useful context: Lu et al. [1] report approximately −20.3% versus −14.6% in their real-forward and proxy-forward image configurations; Zhao et al. [3] report more than 15% video bitrate saving; RPP [4] reports 16.27% average bitrate saving; and Sandwiched Compression [2] reports gains up to 30% in selected adaptations. These results have different tasks, codecs, data, and objectives. They are not targets, baselines, or substitutes for V9 measurements.
+The source papers report useful context: Lu et al. [1] report approximately −20.3% versus −14.6% in their real-forward and proxy-forward image configurations; Zhao et al. [3] report more than 15% video bitrate saving; RPP [4] reports 16.27% average bitrate saving; and Sandwiched Compression [2] reports gains up to 30% in selected adaptations. These results have different tasks, codecs, data, and objectives. They are not targets, baselines, or substitutes for V10 measurements.
 
 ## 6. Discussion
 
@@ -149,7 +149,7 @@ This release has not been trained or measured on Kinetics-400 or Jetson Orin NX 
 
 Task-aware compression may discard information that is irrelevant to a selected model but meaningful to people, future models, safety review, accessibility, or forensic analysis. Human-oriented losses reduce but do not eliminate this risk. Deployments should retain an auditable policy for source retention, downstream task changes, and demographic/per-class failure analysis. Kinetics and other video datasets also require license, privacy, and content review.
 
-The repository contains source code, tests, an experiment protocol, a Jetson runbook, and claim/source manifests. The current test suite verifies identity initialization, codec freezing, real-forward equality, proxy-gradient flow, DINO freezing with input gradients, DCT gradients, metric behavior, and all inherited V4 invariants.
+The repository contains source code, tests, an experiment protocol, a Jetson runbook, and claim/source manifests. The current test suite verifies identity initialization, codec freezing, real-forward equality, proxy-gradient flow, DINO freezing with input gradients, DCT gradients, metric behavior, inherited proxy invariants, and the V10 checkpoint/evaluation regressions.
 
 ## 8. Conclusion
 

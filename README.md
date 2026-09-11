@@ -19,7 +19,7 @@ bpp = proxy_bpp + (real_bpp - proxy_bpp).detach()
 
 This is the video/edge-device extension of the forward-real-codec strategy in Lu et al. The repository also combines joint neural pre/post wrappers from Sandwiched Compression, an RPP-inspired adaptive-DCT perceptual prior, frozen DINOv2 feature preservation, FiLM QP conditioning, the local virtual-video-codec design, and the earlier `proxy_v3`, `proxy_v4`, `film_deeper3d`, and `video_swin` implementations.
 
-> **Scientific status (10 September 2026):** the method, training/evaluation code, tests, manuscript, and Jetson runbook are complete. No Kinetics checkpoint, held-out real-codec result, or Jetson Orin NX measurement was available in the workspace. The paper is therefore an explicitly marked **pre-results manuscript draft**, not a submission-ready empirical paper. Numbers reported by prior work are cited as prior-work results, never as results of this repository.
+> **Scientific status (11 September 2026, V10):** the training and evaluation pipeline has been hardened for exact resume, explicit checkpoint fallback, proxy-saturation gates, paired bootstrap, and result provenance. No Kinetics checkpoint, held-out real-codec result, or Jetson Orin NX measurement was available in the workspace. The paper remains an explicitly marked **pre-results manuscript draft**, not a submission-ready empirical paper.
 
 ## What is implemented
 
@@ -31,6 +31,10 @@ This is the video/edge-device extension of the forward-real-codec strategy in Lu
 - Separate ONNX exports for pre/post deployment around Jetson hardware codecs.
 - Reproducible PyTorch latency benchmark plus a parser for `tegrastats` power logs.
 - Unit and integration tests for the real-forward/proxy-backward identity and gradient invariants.
+- V10 checkpoint policy: `best.pt` follows the requested metric; task BD-rate uses validation-loss fallback only until the first valid BD-rate is observed.
+- Exact V10 resume state including optimizer, AMP scaler, Python/NumPy/PyTorch/CUDA RNG, QP RNG, best-metric state, and locked configuration checks.
+- Paired 10,000-sample video bootstrap, one declared PSNR estimator, raw/envelope RD diagnostics, codec command manifests, hashes, and environment artifacts.
+- Proxy hard-clamp diagnostics and an auditable saturation gate before wrapper checkpoints are selected.
 
 The frozen analyzer and DINOv2 are teachers/evaluators; they are not included in the deployed pre/post TensorRT engines unless an application specifically requires on-device task inference.
 
@@ -42,7 +46,10 @@ Python 3.10+ and an FFmpeg build with `libx264` and/or `libx265` are required.
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/pip install -r requirements-research.txt
+.venv/bin/pip install -r requirements-dev.txt
 ```
+
+The precomputed cache is valid for proxy supervision and the fixed anchor only. It cannot replace the real FFmpeg forward pass after the trainable preprocessor, because that input changes after every optimizer update.
 
 On Windows, use `.venv\Scripts\pip.exe`. LPIPS and ONNX are optional research/export dependencies. DINOv2 can be loaded from an already cloned official repository by passing `--dino-repo /path/to/dinov2`; otherwise PyTorch Hub needs network access on the first run.
 
@@ -90,6 +97,8 @@ python train_sandwich.py \
   --dino-model dinov2_vits14 \
   --sandwich-rate-weight 0.05 --sandwich-task-weight 1.0 \
   --dino-weight 0.25 --human-weight 1.0 \
+  --checkpoint-metric task_bd_rate \
+  --gradient-audit-interval 50 --max-proxy-clamp-fraction 0.05 \
   --output-dir checkpoints/adaptive_sandwich
 ```
 
@@ -103,11 +112,13 @@ python evaluate_sandwich.py \
   --data-root /data/kinetics400/train \
   --codecs h264 h265 \
   --qps 30 32 35 37 40 42 45 \
+  --bootstrap-samples 10000 --bootstrap-seed 2026 \
+  --psnr-aggregation psnr_from_mean_video_mse \
   --device cuda \
   --output-dir outputs/sandwich_real_codec
 ```
 
-The command writes per-video CSV and aggregate JSON. Negative BD-rate means bitrate saving at equal quality/accuracy. Omit `--limit` for reportable experiments.
+The command writes `per_video_metrics.csv`, `summary.json`, `bd_rate.json`, `bootstrap.json`, checkpoint/environment hashes, Git state, and the exact FFmpeg command manifest. Negative BD-rate means bitrate saving at equal quality/accuracy. Omit `--limit`, use at least 10,000 bootstrap samples, and evaluate a clean V10 commit for a run to be marked reportable.
 
 ### 5. Export and benchmark on Jetson Orin NX
 
@@ -135,7 +146,7 @@ python -m pytest -q
 python -m compileall preprocessing train_sandwich.py evaluate_sandwich.py export_jetson.py benchmark_jetson.py
 ```
 
-Current local verification: **89 tests passed**. Two PyTorch nested-tensor performance warnings are non-failures.
+V10 adds regression coverage for checkpoint fallback, explicit metric selection, optimizer selection, method-aware bootstrap, PSNR consistency, raw-curve sensitivity, codec command capture, and proxy saturation. CI and a local environment with PyTorch are the authoritative verification paths.
 
 ## Paper and research record
 
@@ -145,6 +156,7 @@ Current local verification: **89 tests passed**. Two PyTorch nested-tensor perfo
 - [`paper/evidence/source_manifest.json`](paper/evidence/source_manifest.json): source provenance.
 - [`paper/evidence/claims.csv`](paper/evidence/claims.csv): claim-to-source and result-status ledger.
 - [`docs/DESIGN_V9_VI.md`](docs/DESIGN_V9_VI.md): detailed Vietnamese design rationale.
+- [`docs/V10_FIX_AND_VALIDATION_PLAN_VI.md`](docs/V10_FIX_AND_VALIDATION_PLAN_VI.md): ordered V10 fixes, gates, and run checklist.
 - [`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md): locked experimental protocol.
 - [`docs/PROXY_V4_BASELINE.md`](docs/PROXY_V4_BASELINE.md): inherited V4 documentation.
 

@@ -187,6 +187,7 @@ def test_proxy_audit_requires_every_qp_to_pass():
             f"qp{qp}_pair_direction_accuracy": 0.72,
             f"qp{qp}_probe_real_delta_percent": -1.0,
             f"qp{qp}_probe_real_down_fraction": 0.65,
+            f"qp{qp}_proxy_clamp_fraction": 0.01,
         })
     passed = audit_proxy_metrics(metrics, [30, 35])
     assert passed["feasible"]

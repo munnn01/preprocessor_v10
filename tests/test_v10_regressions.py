@@ -1,0 +1,302 @@
+from __future__ import annotations
+
+import math
+import random
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+import torch
+
+from evaluate_sandwich import aggregate_operating_points
+from preprocessing.evaluation import bootstrap_bd_rate, calculate_bd_rate_details
+from preprocessing.proxy_audit import audit_proxy_metrics
+from preprocessing.standard_codec import StandardCodecProxy, StandardVideoCodec
+from train_proxy import validate_cache
+from train_sandwich import (
+    _capture_rng_state,
+    _restore_rng_state,
+    _validate_proxy_checkpoint,
+    _validate_resume_configuration,
+    build_optimizer,
+    build_parser,
+    initial_selection_state,
+    update_selection_state,
+)
+
+
+def _validation(loss: float, bd_rate: float | None, *, top1: float = 0.5) -> dict:
+    return {
+        "loss": loss,
+        "task": loss + 0.25,
+        "top1": top1,
+        "task_bd_rate_percent": bd_rate,
+    }
+
+
+def test_best_checkpoint_follows_loss_while_bd_rate_is_undefined():
+    state = initial_selection_state("task_bd_rate")
+    state, first = update_selection_state(state, _validation(2.0, None), 1)
+    state, second = update_selection_state(state, _validation(1.0, None), 2)
+
+    assert "best.pt" in first
+    assert "best.pt" in second
+    assert state["primary_epoch"] == 2
+    assert state["primary_metric_used"] == "loss_fallback"
+    assert state["primary_value"] == 1.0
+
+
+def test_first_valid_bd_rate_replaces_loss_fallback_and_undefined_cannot_replace_it():
+    state = initial_selection_state("task_bd_rate")
+    state, _ = update_selection_state(state, _validation(1.0, None), 1)
+    state, selected = update_selection_state(state, _validation(1.5, -3.0), 2)
+    assert {"best.pt", "best_task_bd_rate.pt"} <= selected
+    assert state["primary_epoch"] == 2
+    assert state["primary_metric_used"] == "task_bd_rate"
+
+    state, selected = update_selection_state(state, _validation(0.5, None), 3)
+    assert "best_loss.pt" in selected
+    assert "best.pt" not in selected
+    assert state["primary_epoch"] == 2
+
+
+@pytest.mark.parametrize(
+    ("metric", "first", "second", "should_replace"),
+    [
+        ("loss", _validation(1.0, None), _validation(2.0, None), False),
+        ("ce", _validation(1.0, None), _validation(0.5, None), True),
+        (
+            "top1",
+            _validation(1.0, None, top1=0.5),
+            _validation(2.0, None, top1=0.6),
+            True,
+        ),
+    ],
+)
+def test_explicit_checkpoint_metrics_are_honored(metric, first, second, should_replace):
+    state = initial_selection_state(metric)
+    state, _ = update_selection_state(state, first, 1)
+    state, selected = update_selection_state(state, second, 2)
+    assert ("best.pt" in selected) is should_replace
+
+
+def test_sandwich_parser_does_not_expose_legacy_noop_rate_flags():
+    destinations = {action.dest for action in build_parser()._actions}
+    assert "mask_rate_outside_weight" not in destinations
+    assert "rate_dual_control" not in destinations
+    assert "refresh_proxy_on_resume" not in destinations
+
+
+def test_optimizer_flag_selects_the_real_optimizer():
+    parameter = torch.nn.Parameter(torch.tensor(1.0))
+    adam = build_optimizer(
+        SimpleNamespace(optimizer="adam", lr=1e-3, weight_decay=0.0), [parameter]
+    )
+    adamw = build_optimizer(
+        SimpleNamespace(optimizer="adamw", lr=1e-3, weight_decay=0.0), [parameter]
+    )
+    assert type(adam) is torch.optim.Adam
+    assert type(adamw) is torch.optim.AdamW
+
+
+def test_rng_state_restores_python_numpy_torch_and_qp_streams():
+    outer_qp = random.Random()
+    outer = _capture_rng_state(outer_qp)
+    try:
+        random.seed(3)
+        np.random.seed(3)
+        torch.manual_seed(3)
+        qp_rng = random.Random(19)
+        state = _capture_rng_state(qp_rng)
+        expected = (random.random(), float(np.random.rand()), float(torch.rand(())), qp_rng.random())
+        _restore_rng_state(state, qp_rng)
+        observed = (random.random(), float(np.random.rand()), float(torch.rand(())), qp_rng.random())
+        assert observed == pytest.approx(expected)
+    finally:
+        _restore_rng_state(outer, outer_qp)
+
+
+def test_exact_resume_rejects_changed_runtime_knobs():
+    checkpoint = {
+        "format_version": 10,
+        "args": {"amp": True, "ffmpeg_version": "ffmpeg version A"},
+        "proxy_sha256": "same-proxy",
+    }
+    args = SimpleNamespace(amp=False, ffmpeg_version="ffmpeg version A")
+    with pytest.raises(ValueError, match="amp"):
+        _validate_resume_configuration(checkpoint, args, "same-proxy")
+
+
+def test_reportable_sandwich_rejects_proxy_without_codec_provenance(tmp_path):
+    proxy_path = tmp_path / "proxy.pt"
+    torch.save({"codec_config": {}, "args": {}, "proxy_audit": {"feasible": True}}, proxy_path)
+    args = SimpleNamespace(
+        proxy_checkpoint=str(proxy_path),
+        codec="h264",
+        codec_fps=30.0,
+        codec_preset="medium",
+        ffmpeg_threads=1,
+        ffmpeg_version="ffmpeg version test",
+        codec_qps=[30, 35],
+        frames=16,
+        frame_stride=2,
+        frame_size=128,
+        allow_unaudited_proxy=False,
+    )
+    with pytest.raises(ValueError, match="codec provenance"):
+        _validate_proxy_checkpoint(args)
+
+
+def _paired_rows() -> list[dict]:
+    rows = []
+    operating_points = ((30, 0.8, 0.9), (35, 0.4, 0.7), (40, 0.2, 0.5))
+    for sample_index in range(4):
+        for qp, anchor_rate, top1 in operating_points:
+            for method, scale in (("anchor", 1.0), ("sandwich", 0.8)):
+                rows.append(
+                    {
+                        "sample_id": f"{sample_index:08d}",
+                        "sample_index": sample_index,
+                        "codec": "h264",
+                        "method": method,
+                        "qp": qp,
+                        "bpp": anchor_rate * scale,
+                        "mse": 0.1 / (1.0 + top1),
+                        "psnr_db": -10.0 * math.log10(0.1 / (1.0 + top1)),
+                        "ms_ssim": top1,
+                        "top1": top1,
+                        "top5": 1.0,
+                    }
+                )
+    return rows
+
+
+def test_bootstrap_accepts_real_method_names_and_matches_point_estimate():
+    result = bootstrap_bd_rate(
+        _paired_rows(),
+        "top1_percent",
+        anchor_method="anchor",
+        proposed_method="sandwich",
+        samples=100,
+        seed=7,
+    )
+    assert result["point_estimate_percent"] == pytest.approx(-20.0, abs=1e-6)
+    assert result["samples_valid"] == 100
+    assert result["samples_invalid"] == 0
+    assert result["valid_fraction"] == 1.0
+
+
+def test_summary_psnr_uses_the_predeclared_aggregation():
+    rows = []
+    for index, mse in enumerate((0.01, 0.09)):
+        rows.append(
+            {
+                "sample_index": index,
+                "codec": "h264",
+                "qp": 35,
+                "method": "anchor",
+                "bpp": 0.5,
+                "mse": mse,
+                "psnr_db": -10.0 * math.log10(mse),
+                "ms_ssim": 0.8,
+                "top1": 1.0,
+                "top5": 1.0,
+            }
+        )
+    aggregate = aggregate_operating_points(
+        rows, psnr_aggregation="psnr_from_mean_video_mse", include_lpips=False
+    )[0]
+    mean_video = aggregate_operating_points(
+        rows, psnr_aggregation="mean_video_psnr", include_lpips=False
+    )[0]
+    assert aggregate["psnr_db"] == pytest.approx(-10.0 * math.log10(0.05))
+    assert aggregate["psnr_db"] != pytest.approx(mean_video["psnr_db"])
+
+
+def test_raw_curve_sensitivity_reports_nonmonotonic_quality():
+    rows = []
+    for method, scale in (("anchor", 1.0), ("sandwich", 0.8)):
+        for rate, quality in ((0.1, 10.0), (0.2, 30.0), (0.3, 20.0)):
+            rows.append({"method": method, "bpp": rate * scale, "quality": quality})
+    result = calculate_bd_rate_details(
+        rows,
+        "quality",
+        anchor_method="anchor",
+        proposed_method="sandwich",
+        apply_monotone_envelope=False,
+    )
+    assert result["bd_rate_percent"] is None
+    assert result["anchor_curve"]["invalid_reason"] == "raw_quality_not_strictly_increasing"
+
+
+def test_proxy_reports_hard_clamp_saturation():
+    proxy = StandardCodecProxy(
+        hidden_channels=8,
+        latent_channels=8,
+        bottleneck_channels=8,
+        blocks_per_stage=1,
+        film_channels=8,
+    )
+    torch.nn.init.zeros_(proxy.to_rgb.weight)
+    torch.nn.init.constant_(proxy.to_rgb.bias, 10.0)
+    proxy(torch.full((2, 4, 3, 16, 16), 0.5), 35)
+    assert float(proxy.last_diagnostics["proxy_clamp_fraction"]) > 0.5
+    assert proxy.last_diagnostics["proxy_clamp_fraction_per_sample"].shape == (2,)
+
+
+def test_proxy_audit_rejects_excessive_clamp_for_each_qp():
+    metrics = {}
+    for qp in (30, 35):
+        metrics.update(
+            {
+                f"qp{qp}_rate_mape_percent": 10.0,
+                f"qp{qp}_pair_direction_accuracy": 0.8,
+                f"qp{qp}_probe_real_delta_percent": -1.0,
+                f"qp{qp}_probe_real_down_fraction": 0.8,
+                f"qp{qp}_proxy_clamp_fraction": 0.01 if qp == 30 else 0.20,
+            }
+        )
+    result = audit_proxy_metrics(metrics, (30, 35), max_proxy_clamp_fraction=0.05)
+    assert not result["feasible"]
+    assert result["per_qp"][1]["reasons"] == ["proxy_clamp_fraction_too_high"]
+
+
+def test_codec_command_manifest_matches_runtime_configuration():
+    codec = StandardVideoCodec("h264", 35, fps=25.0, preset="fast", ffmpeg_threads=3)
+    commands = codec.pipe_command_spec(16, 128, 128)
+    encoded = " ".join(commands["encode"])
+    assert "-framerate 25.0" in encoded
+    assert "-preset fast" in encoded
+    assert "-qp 35" in encoded
+    assert "keyint=16:min-keyint=16:scenecut=0" in encoded
+
+
+def test_proxy_training_rejects_legacy_precompute_without_ffmpeg_provenance():
+    args = SimpleNamespace(
+        codec="h264",
+        qps=[30, 35],
+        fps=30.0,
+        preset="medium",
+        codec_io="pipe",
+        ffmpeg_threads=1,
+        frames=16,
+        frame_stride=2,
+        frame_size=128,
+    )
+    manifest = {
+        "version": 2,
+        "codec": {
+            "name": "h264",
+            "qps": [30, 35],
+            "fps": 30.0,
+            "preset": "medium",
+            "io_backend": "pipe",
+            "ffmpeg_threads": 1,
+            "ffmpeg_version": "ffmpeg version test",
+        },
+        "video": {"frames": 16, "frame_stride": 2, "frame_size": 128},
+    }
+    validate_cache(args, SimpleNamespace(manifest=manifest))
+    manifest["version"] = 1
+    with pytest.raises(ValueError, match="cache_version"):
+        validate_cache(args, SimpleNamespace(manifest=manifest))

@@ -45,8 +45,7 @@ def _run_ffmpeg_pipe(command: list[str], payload: bytes) -> bytes:
             command,
             input=payload,
             check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
     except FileNotFoundError as exc:
         raise RuntimeError(
@@ -112,6 +111,75 @@ class StandardVideoCodec(nn.Module):
     @property
     def format_name(self) -> str:
         return "h264" if self.codec == "h264" else "hevc"
+
+    def pipe_command_spec(self, time: int, height: int, width: int) -> dict[str, list[str]]:
+        """Return the exact pipe commands used for a clip of the given shape."""
+
+        if time < 1 or height < 1 or width < 1:
+            raise ValueError("codec command dimensions must be positive")
+        video_size = f"{width}x{height}"
+        keyint = max(time, 1)
+        encode = [
+            self.ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-video_size",
+            video_size,
+            "-framerate",
+            str(self.fps),
+            "-i",
+            "pipe:0",
+            "-frames:v",
+            str(time),
+            "-an",
+            "-c:v",
+            self.encoder,
+            "-preset",
+            self.preset,
+            "-qp",
+            str(self.qp),
+            "-pix_fmt",
+            "yuv420p",
+            "-threads",
+            str(self.ffmpeg_threads),
+        ]
+        if self.codec == "h264":
+            encode.extend(
+                ["-x264-params", f"keyint={keyint}:min-keyint={keyint}:scenecut=0"]
+            )
+        else:
+            encode.extend(
+                [
+                    "-x265-params",
+                    f"log-level=error:keyint={keyint}:min-keyint={keyint}:scenecut=0",
+                ]
+            )
+        encode.extend(["-f", self.format_name, "pipe:1"])
+        decode = [
+            self.ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-threads",
+            str(self.ffmpeg_threads),
+            "-f",
+            self.format_name,
+            "-i",
+            "pipe:0",
+            "-frames:v",
+            str(time),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "pipe:1",
+        ]
+        return {"encode": encode, "decode": decode}
 
     def set_qp(self, qp: int) -> None:
         if not 0 <= qp <= 51:
@@ -243,73 +311,9 @@ class StandardVideoCodec(nn.Module):
             .cpu()
             .numpy()
         )
-        video_size = f"{width}x{height}"
-        keyint = max(time, 1)
-        command = [
-            self.ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "-video_size",
-            video_size,
-            "-framerate",
-            str(self.fps),
-            "-i",
-            "pipe:0",
-            "-frames:v",
-            str(time),
-            "-an",
-            "-c:v",
-            self.encoder,
-            "-preset",
-            self.preset,
-            "-qp",
-            str(self.qp),
-            "-pix_fmt",
-            "yuv420p",
-            "-threads",
-            str(self.ffmpeg_threads),
-        ]
-        if self.codec == "h264":
-            command.extend(
-                ["-x264-params", f"keyint={keyint}:min-keyint={keyint}:scenecut=0"]
-            )
-        else:
-            command.extend(
-                [
-                    "-x265-params",
-                    f"log-level=error:keyint={keyint}:min-keyint={keyint}:scenecut=0",
-                ]
-            )
-        command.extend(["-f", self.format_name, "pipe:1"])
-        bitstream = _run_ffmpeg_pipe(command, frames.tobytes())
-
-        decoded = _run_ffmpeg_pipe(
-            [
-                self.ffmpeg,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-threads",
-                str(self.ffmpeg_threads),
-                "-f",
-                self.format_name,
-                "-i",
-                "pipe:0",
-                "-frames:v",
-                str(time),
-                "-f",
-                "rawvideo",
-                "-pix_fmt",
-                "rgb24",
-                "pipe:1",
-            ],
-            bitstream,
-        )
+        commands = self.pipe_command_spec(time, height, width)
+        bitstream = _run_ffmpeg_pipe(commands["encode"], frames.tobytes())
+        decoded = _run_ffmpeg_pipe(commands["decode"], bitstream)
         expected_bytes = time * height * width * channels
         if len(decoded) != expected_bytes:
             raise RuntimeError(
@@ -450,6 +454,7 @@ class StandardCodecProxy(nn.Module):
         self.qp_step_divisor = qp_step_divisor
         self.max_delta = max_delta
         self.entropy_floor = entropy_floor
+        self.last_diagnostics: dict[str, torch.Tensor] = {}
 
         self.qp_embedding = nn.Sequential(
             nn.Linear(1, film_channels),
@@ -548,7 +553,7 @@ class StandardCodecProxy(nn.Module):
 
     @staticmethod
     def _qp_tensor(
-        qp: int | float | torch.Tensor,
+        qp: float | torch.Tensor,
         batch: int,
         *,
         device: torch.device,
@@ -599,7 +604,7 @@ class StandardCodecProxy(nn.Module):
         return gain * entropy_bpp + overhead
 
     def forward(
-        self, clip: torch.Tensor, qp: int | float | torch.Tensor
+        self, clip: torch.Tensor, qp: float | torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if clip.ndim != 5 or clip.shape[2] != 3:
             raise ValueError(f"expected [B,T,3,H,W], got {tuple(clip.shape)}")
@@ -637,7 +642,22 @@ class StandardCodecProxy(nn.Module):
         decoded_residual = self.max_delta * torch.tanh(self.to_rgb(decoded_high))
         decoded_residual = decoded_residual[..., :time, :height, :width]
         # Integrating residuals gives a closed differentiable temporal path.
-        reconstruction = (0.5 + decoded_residual.cumsum(dim=2)).clamp(0.0, 1.0)
+        preclamp = 0.5 + decoded_residual.cumsum(dim=2)
+        below = preclamp < 0.0
+        above = preclamp > 1.0
+        outside = below | above
+        reduce_axes = tuple(range(1, outside.ndim))
+        self.last_diagnostics = {
+            "proxy_clamp_fraction": outside.float().mean().detach(),
+            "proxy_below_zero_fraction": below.float().mean().detach(),
+            "proxy_above_one_fraction": above.float().mean().detach(),
+            "proxy_clamp_fraction_per_sample": outside.float().mean(reduce_axes).detach(),
+            "proxy_below_zero_fraction_per_sample": below.float().mean(reduce_axes).detach(),
+            "proxy_above_one_fraction_per_sample": above.float().mean(reduce_axes).detach(),
+            "proxy_preclamp_min": preclamp.detach().amin(),
+            "proxy_preclamp_max": preclamp.detach().amax(),
+        }
+        reconstruction = preclamp.clamp(0.0, 1.0)
         reconstruction = reconstruction.permute(0, 2, 1, 3, 4)
 
         rate = self._entropy_bpp(
@@ -651,7 +671,7 @@ class StandardCodecProxy(nn.Module):
     ) -> StandardCodecProxy:
         checkpoint = torch.load(path, map_location=map_location, weights_only=False)
         if not isinstance(checkpoint, dict):
-            raise ValueError(f"unsupported proxy checkpoint: {path}")
+            raise TypeError(f"unsupported proxy checkpoint: {path}")
         config = dict(checkpoint.get("proxy_config", {}))
         architecture = config.pop("architecture", None)
         if architecture != cls.ARCHITECTURE:
@@ -673,10 +693,11 @@ class ParallelStandardVideoCodec(nn.Module):
         self.standard_codec = standard_codec
         self.proxy = proxy.requires_grad_(False)
         self.proxy.eval()
+        self.last_proxy_diagnostics: dict[str, torch.Tensor] = {}
 
     @property
     def qp(self) -> int:
-        return int(getattr(self.standard_codec, "qp"))
+        return int(self.standard_codec.qp)
 
     def set_qp(self, qp: int) -> None:
         setter = getattr(self.standard_codec, "set_qp", None)
@@ -697,7 +718,9 @@ class ParallelStandardVideoCodec(nn.Module):
         codec_source: str = "real",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if codec_source == "proxy":
-            return self.proxy(clip, self.qp)
+            reconstruction, bpp = self.proxy(clip, self.qp)
+            self.last_proxy_diagnostics = dict(getattr(self.proxy, "last_diagnostics", {}))
+            return reconstruction, bpp
         if codec_source != "real":
             raise ValueError("codec_source must be 'real' or 'proxy'")
         real_reconstruction, real_bpp = self.standard_codec(clip.detach())
@@ -707,6 +730,7 @@ class ParallelStandardVideoCodec(nn.Module):
             return real_reconstruction, real_bpp
 
         proxy_reconstruction, proxy_bpp = self.proxy(clip, self.qp)
+        self.last_proxy_diagnostics = dict(getattr(self.proxy, "last_diagnostics", {}))
         reconstruction = proxy_reconstruction + (
             real_reconstruction - proxy_reconstruction
         ).detach()
@@ -723,3 +747,21 @@ def require_ffmpeg(executable: str = "ffmpeg") -> None:
         available = shutil.which(executable) is not None
     if not available:
         raise RuntimeError(f"FFmpeg executable not found: {executable!r}")
+
+
+def ffmpeg_version(executable: str = "ffmpeg") -> str:
+    """Return the first FFmpeg version line for cache/provenance keys."""
+
+    require_ffmpeg(executable)
+    completed = subprocess.run(
+        [executable, "-version"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    lines = completed.stdout.splitlines()
+    if not lines:
+        raise RuntimeError(f"FFmpeg returned no version information: {executable!r}")
+    return lines[0].strip()

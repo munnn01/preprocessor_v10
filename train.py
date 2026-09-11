@@ -35,7 +35,7 @@ from preprocessing.feature_distillation import (
     feature_configuration, feature_distillation, validate_feature_resume,
     feature_enabled, feature_weight_for_qp, feature_weight_map,
 )
-from preprocessing.standard_codec import require_ffmpeg
+from preprocessing.standard_codec import ffmpeg_version, require_ffmpeg
 from preprocessing.utils import (
     AverageMeter,
     save_checkpoint,
@@ -1441,15 +1441,25 @@ def load_or_evaluate_anchor_validation(
     cache_path = output_dir / "anchor_validation.json"
     expected_qps = list(args.codec_qps)
     expected_examples = len(loader.dataset)
+    expected_configuration = {
+        "codec": args.codec,
+        "qps": expected_qps,
+        "fps": float(args.codec_fps),
+        "preset": args.codec_preset,
+        "ffmpeg": str(args.ffmpeg),
+        "ffmpeg_version": ffmpeg_version(args.ffmpeg),
+        "ffmpeg_threads": int(getattr(args, "ffmpeg_threads", 1)),
+        "frames": int(args.frames),
+        "frame_stride": int(args.frame_stride),
+        "frame_size": int(args.frame_size),
+        "analyzer": str(args.analyzer),
+        "validation_examples": expected_examples,
+        "val_ratio": float(args.val_ratio),
+        "seed": int(args.seed),
+    }
     if cache_path.is_file():
         cached = json.loads(cache_path.read_text(encoding="utf-8"))
-        if (
-            cached.get("codec") == args.codec
-            and cached.get("qps") == expected_qps
-            and cached.get("validation_examples") == expected_examples
-            and float(cached.get("val_ratio", args.val_ratio)) == float(args.val_ratio)
-            and int(cached.get("seed", args.seed)) == int(args.seed)
-        ):
+        if cached.get("configuration") == expected_configuration:
             print(f"[anchor] reused {cache_path}")
             return {key: float(value) for key, value in cached["metrics"].items()}
         print("[anchor] cached curve does not match this run; recomputing")
@@ -1460,11 +1470,8 @@ def load_or_evaluate_anchor_validation(
     write_json(
         cache_path,
         {
-            "codec": args.codec,
-            "qps": expected_qps,
-            "validation_examples": expected_examples,
-            "val_ratio": args.val_ratio,
-            "seed": args.seed,
+            "format_version": 10,
+            "configuration": expected_configuration,
             "metrics": metrics,
         },
     )

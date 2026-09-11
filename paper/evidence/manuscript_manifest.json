@@ -4,7 +4,7 @@
   "authors": "pending human approval",
   "generated_on": "2026-09-10",
   "implemented_task": "Kinetics-style action recognition",
-  "not_implemented": ["GOT-10k tracking adapter", "trained V9 checkpoint", "Jetson TensorRT runtime integration"],
+  "not_implemented": ["GOT-10k tracking adapter", "trained V10 checkpoint", "Jetson TensorRT runtime integration"],
   "missing_empirical_inputs": ["dataset", "trained proxy/wrapper checkpoint", "NVIDIA Jetson Orin NX access"],
   "result_policy": "Populate Results only from artifacts satisfying docs/EXPERIMENT_PROTOCOL.md and then obtain human co-author approval.",
   "automated_verification": {

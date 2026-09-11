@@ -14,7 +14,7 @@ from torchvision.models.video import R3D_18_Weights
 
 from preprocessing import StandardVideoCodec
 from preprocessing.data import VideoFolderDataset, stratified_split_indices
-from preprocessing.standard_codec import require_ffmpeg
+from preprocessing.standard_codec import ffmpeg_version, require_ffmpeg
 from preprocessing.utils import save_checkpoint, seed_everything, write_json
 
 
@@ -246,7 +246,7 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     splits = make_splits(args)
     config = {
-        "version": 1,
+        "version": 2,
         "data": {
             "train_root": str(splits["train"][0].root.resolve()),
             "val_root": str(splits["val"][0].root.resolve()),
@@ -262,6 +262,8 @@ def main() -> None:
             "io_backend": args.codec_io,
             "codec_workers": args.codec_workers,
             "ffmpeg_threads": args.ffmpeg_threads,
+            "ffmpeg": args.ffmpeg,
+            "ffmpeg_version": ffmpeg_version(args.ffmpeg),
         },
         "video": {
             "frames": args.frames,

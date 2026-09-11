@@ -127,8 +127,12 @@ def dataset_sample_path(dataset: Dataset, index: int) -> Path:
 
 
 def _prepare_rd_curve(
-    rows: Sequence[Mapping[str, Any]], method: str, quality_key: str
-) -> tuple[np.ndarray, np.ndarray]:
+    rows: Sequence[Mapping[str, Any]],
+    method: str,
+    quality_key: str,
+    *,
+    apply_monotone_envelope: bool,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     points = sorted(
         (
             (float(row["bpp"]), float(row[quality_key]))
@@ -137,26 +141,55 @@ def _prepare_rd_curve(
         ),
         key=lambda point: point[0],
     )
+    diagnostics: dict[str, Any] = {
+        "method": method,
+        "raw_points": [
+            {"bpp": float(rate), "quality": float(quality)} for rate, quality in points
+        ],
+        "raw_point_count": len(points),
+        "processed_points": [],
+        "processed_point_count": 0,
+        "dropped_point_count": 0,
+        "invalid_reason": None,
+    }
     if not points:
-        return np.array([], dtype=np.float64), np.array([], dtype=np.float64)
+        diagnostics["invalid_reason"] = "no_points"
+        return np.array([], dtype=np.float64), np.array([], dtype=np.float64), diagnostics
 
     rates = np.asarray([point[0] for point in points], dtype=np.float64)
     qualities = np.asarray([point[1] for point in points], dtype=np.float64)
     if np.any(rates <= 0) or not np.all(np.isfinite(rates)):
         raise ValueError("BD-rate requires finite positive BPP values")
+    if not np.all(np.isfinite(qualities)):
+        raise ValueError("BD-rate requires finite quality values")
 
-    # Accuracy measured on a finite validation set can move down by one sample.
-    # A monotone envelope removes dominated higher-rate points before fitting.
-    qualities = np.maximum.accumulate(qualities)
-    quality_to_rate: dict[float, float] = {}
-    for quality, rate in zip(qualities, rates, strict=True):
-        key = float(quality)
-        quality_to_rate[key] = min(quality_to_rate.get(key, math.inf), float(rate))
-    unique_qualities = np.asarray(sorted(quality_to_rate), dtype=np.float64)
-    unique_rates = np.asarray(
-        [quality_to_rate[quality] for quality in unique_qualities], dtype=np.float64
-    )
-    return unique_qualities, unique_rates
+    if apply_monotone_envelope:
+        # Accuracy measured on a finite validation set can move down by one sample.
+        # Preserve the raw points above, then remove dominated higher-rate points.
+        qualities = np.maximum.accumulate(qualities)
+        quality_to_rate: dict[float, float] = {}
+        for quality, rate in zip(qualities, rates, strict=True):
+            key = float(quality)
+            quality_to_rate[key] = min(quality_to_rate.get(key, math.inf), float(rate))
+        unique_qualities = np.asarray(sorted(quality_to_rate), dtype=np.float64)
+        unique_rates = np.asarray(
+            [quality_to_rate[quality] for quality in unique_qualities], dtype=np.float64
+        )
+    else:
+        if len(qualities) > 1 and np.any(np.diff(qualities) <= 0):
+            diagnostics["invalid_reason"] = "raw_quality_not_strictly_increasing"
+            return np.array([], dtype=np.float64), np.array([], dtype=np.float64), diagnostics
+        unique_qualities, unique_rates = qualities, rates
+
+    diagnostics["processed_points"] = [
+        {"bpp": float(rate), "quality": float(quality)}
+        for quality, rate in zip(unique_qualities, unique_rates, strict=True)
+    ]
+    diagnostics["processed_point_count"] = len(unique_qualities)
+    diagnostics["dropped_point_count"] = len(points) - len(unique_qualities)
+    if len(unique_qualities) < 2:
+        diagnostics["invalid_reason"] = "fewer_than_two_distinct_quality_points"
+    return unique_qualities, unique_rates, diagnostics
 
 
 def _pchip_slopes(x: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -254,18 +287,36 @@ def _integrate_pchip(
 
 
 def calculate_bd_rate_details(
-    rows: Sequence[Mapping[str, Any]], quality_key: str
+    rows: Sequence[Mapping[str, Any]],
+    quality_key: str,
+    *,
+    anchor_method: str = "anchor",
+    proposed_method: str = "preprocessed",
+    apply_monotone_envelope: bool = True,
 ) -> dict[str, Any]:
     """Return PCHIP BD-rate and diagnostics over the shared quality interval."""
 
-    anchor_quality, anchor_rate = _prepare_rd_curve(rows, "anchor", quality_key)
-    proposed_quality, proposed_rate = _prepare_rd_curve(
-        rows, "preprocessed", quality_key
+    anchor_quality, anchor_rate, anchor_diagnostics = _prepare_rd_curve(
+        rows,
+        anchor_method,
+        quality_key,
+        apply_monotone_envelope=apply_monotone_envelope,
+    )
+    proposed_quality, proposed_rate, proposed_diagnostics = _prepare_rd_curve(
+        rows,
+        proposed_method,
+        quality_key,
+        apply_monotone_envelope=apply_monotone_envelope,
     )
     details: dict[str, Any] = {
         "interpolation": "pchip",
-        "anchor_points": int(len(anchor_quality)),
-        "preprocessed_points": int(len(proposed_quality)),
+        "curve_policy": "monotone_pareto_envelope" if apply_monotone_envelope else "raw",
+        "anchor_method": anchor_method,
+        "proposed_method": proposed_method,
+        "anchor_points": len(anchor_quality),
+        "preprocessed_points": len(proposed_quality),
+        "anchor_curve": anchor_diagnostics,
+        "proposed_curve": proposed_diagnostics,
         "quality_min": None,
         "quality_max": None,
         "overlap_span": 0.0,
@@ -299,11 +350,22 @@ def calculate_bd_rate_details(
 
 
 def calculate_bd_rate(
-    rows: Sequence[Mapping[str, Any]], quality_key: str
+    rows: Sequence[Mapping[str, Any]],
+    quality_key: str,
+    *,
+    anchor_method: str = "anchor",
+    proposed_method: str = "preprocessed",
+    apply_monotone_envelope: bool = True,
 ) -> float | None:
     """Return preprocessed-vs-anchor PCHIP BD-rate over shared quality."""
 
-    value = calculate_bd_rate_details(rows, quality_key)["bd_rate_percent"]
+    value = calculate_bd_rate_details(
+        rows,
+        quality_key,
+        anchor_method=anchor_method,
+        proposed_method=proposed_method,
+        apply_monotone_envelope=apply_monotone_envelope,
+    )["bd_rate_percent"]
     return None if value is None else float(value)
 
 
@@ -311,9 +373,13 @@ def bootstrap_bd_rate(
     rows: Sequence[Mapping[str, Any]],
     quality_key: str,
     *,
-    samples: int = 2000,
+    anchor_method: str = "anchor",
+    proposed_method: str = "preprocessed",
+    samples: int = 10000,
     confidence_level: float = 0.95,
     seed: int = 2026,
+    psnr_aggregation: str = "psnr_from_mean_video_mse",
+    apply_monotone_envelope: bool = True,
 ) -> dict[str, Any]:
     """Estimate a paired video-level confidence interval for aggregate BD-rate."""
 
@@ -321,23 +387,48 @@ def bootstrap_bd_rate(
         raise ValueError("bootstrap samples must be non-negative")
     if not 0.0 < confidence_level < 1.0:
         raise ValueError("confidence level must lie strictly between zero and one")
-    sample_indices = sorted({int(row["sample_index"]) for row in rows})
+    if psnr_aggregation not in {"psnr_from_mean_video_mse", "mean_video_psnr"}:
+        raise ValueError("unknown PSNR aggregation")
+    selected = [
+        row for row in rows if str(row["method"]) in {anchor_method, proposed_method}
+    ]
+    sample_indices = sorted(
+        {
+            str(row["sample_id"] if "sample_id" in row else row["sample_index"])
+            for row in selected
+        }
+    )
     if not sample_indices:
         raise ValueError("bootstrap requires at least one per-video row")
 
-    expected = {(str(row["method"]), int(row["qp"])) for row in rows}
+    expected = {(str(row["method"]), int(row["qp"])) for row in selected}
+    methods = {method for method, _ in expected}
+    if methods != {anchor_method, proposed_method}:
+        raise ValueError(
+            f"bootstrap requires methods {anchor_method!r} and {proposed_method!r}"
+        )
+    anchor_qps = {qp for method, qp in expected if method == anchor_method}
+    proposed_qps = {qp for method, qp in expected if method == proposed_method}
+    if anchor_qps != proposed_qps:
+        raise ValueError("bootstrap methods must contain identical QP sets")
     sample_positions = {
         sample_index: position for position, sample_index in enumerate(sample_indices)
     }
+    if quality_key == "psnr_db":
+        quality_source = "mse" if psnr_aggregation == "psnr_from_mean_video_mse" else "psnr_db"
+    elif quality_key == "top1_percent":
+        quality_source = "top1"
+    else:
+        quality_source = quality_key
     values_by_operating_point = {
         key: {
             metric: np.full(len(sample_indices), np.nan, dtype=np.float64)
-            for metric in ("bpp", "mse", "top1")
+            for metric in ("bpp", quality_source)
         }
         for key in expected
     }
-    for row in rows:
-        sample_index = int(row["sample_index"])
+    for row in selected:
+        sample_index = str(row["sample_id"] if "sample_id" in row else row["sample_index"])
         position = sample_positions[sample_index]
         key = (str(row["method"]), int(row["qp"]))
         values = values_by_operating_point[key]
@@ -365,27 +456,42 @@ def bootstrap_bd_rate(
     def aggregate(draw: np.ndarray) -> list[dict[str, float | int | str]]:
         aggregated: list[dict[str, float | int | str]] = []
         for (method, qp), values in sorted(values_by_operating_point.items()):
-            mse = float(values["mse"][draw].mean())
-            aggregated.append(
-                {
-                    "method": method,
-                    "qp": qp,
-                    "bpp": float(values["bpp"][draw].mean()),
-                    "mse": mse,
-                    "psnr_db": -10.0 * math.log10(max(mse, 1e-12)),
-                    "top1_percent": 100.0 * float(values["top1"][draw].mean()),
-                }
-            )
+            quality_value = float(values[quality_source][draw].mean())
+            if quality_key == "psnr_db" and quality_source == "mse":
+                quality_value = -10.0 * math.log10(max(quality_value, 1e-12))
+            elif quality_key == "top1_percent":
+                quality_value *= 100.0
+            aggregated.append({
+                "method": method,
+                "qp": qp,
+                "bpp": float(values["bpp"][draw].mean()),
+                quality_key: quality_value,
+            })
         return aggregated
 
     point_rows = aggregate(np.arange(len(sample_indices)))
-    point_estimate = calculate_bd_rate(point_rows, quality_key)
+    point_estimate = calculate_bd_rate(
+        point_rows,
+        quality_key,
+        anchor_method=anchor_method,
+        proposed_method=proposed_method,
+        apply_monotone_envelope=apply_monotone_envelope,
+    )
     result: dict[str, Any] = {
         "method": "paired_video_bootstrap",
+        "anchor_method": anchor_method,
+        "proposed_method": proposed_method,
+        "quality_metric": quality_key,
+        "psnr_aggregation": psnr_aggregation if quality_key == "psnr_db" else None,
+        "curve_policy": (
+            "monotone_pareto_envelope" if apply_monotone_envelope else "raw"
+        ),
         "confidence_level": float(confidence_level),
         "seed": int(seed),
         "samples_requested": int(samples),
         "samples_valid": 0,
+        "samples_invalid": int(samples),
+        "valid_fraction": 0.0,
         "point_estimate_percent": point_estimate,
         "median_percent": None,
         "lower_percent": None,
@@ -399,12 +505,18 @@ def bootstrap_bd_rate(
     for _ in range(samples):
         draw = generator.integers(0, len(sample_indices), size=len(sample_indices))
         estimate = calculate_bd_rate(
-            aggregate(draw), quality_key
+            aggregate(draw),
+            quality_key,
+            anchor_method=anchor_method,
+            proposed_method=proposed_method,
+            apply_monotone_envelope=apply_monotone_envelope,
         )
         if estimate is not None and math.isfinite(estimate):
             estimates.append(float(estimate))
 
     result["samples_valid"] = len(estimates)
+    result["samples_invalid"] = samples - len(estimates)
+    result["valid_fraction"] = len(estimates) / samples if samples else 0.0
     if estimates:
         alpha = (1.0 - confidence_level) / 2.0
         result.update(

@@ -1,0 +1,24 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install project and test tools
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Compile
+        run: python -m compileall preprocessing train.py train_proxy.py train_sandwich.py evaluate_sandwich.py
+      - name: Test
+        run: python -m pytest -q
