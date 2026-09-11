@@ -7,12 +7,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
 
 from evaluate_sandwich import aggregate_operating_points
+from preprocessing import AdaptiveVideoSandwich
 from preprocessing.evaluation import bootstrap_bd_rate, calculate_bd_rate_details
 from preprocessing.proxy_audit import audit_proxy_metrics
 from preprocessing.standard_codec import StandardCodecProxy, StandardVideoCodec
-from train_proxy import validate_cache
+from train_proxy import validate_cache, validate_pair_audit_configuration
 from train_sandwich import (
     _capture_rng_state,
     _restore_rng_state,
@@ -21,6 +24,7 @@ from train_sandwich import (
     build_optimizer,
     build_parser,
     initial_selection_state,
+    run_epoch,
     update_selection_state,
 )
 
@@ -300,3 +304,160 @@ def test_proxy_training_rejects_legacy_precompute_without_ffmpeg_provenance():
     manifest["version"] = 1
     with pytest.raises(ValueError, match="cache_version"):
         validate_cache(args, SimpleNamespace(manifest=manifest))
+
+
+def test_proxy_requires_pairs_before_promising_a_feasible_checkpoint():
+    args = SimpleNamespace(
+        init_checkpoint=None,
+        resume=None,
+        preprocessor_checkpoint=None,
+        pair_strengths=None,
+        allow_incomplete_audit=False,
+    )
+    with pytest.raises(ValueError, match="best_feasible.pt"):
+        validate_pair_audit_configuration(args)
+
+    args.allow_incomplete_audit = True
+    validate_pair_audit_configuration(args)
+
+
+def _epoch_smoke_args() -> SimpleNamespace:
+    return SimpleNamespace(
+        amp=False,
+        codec_qps=[30, 45],
+        qp_sampling_weights=None,
+        gradient_audit_interval=0,
+        accumulation_steps=1,
+        clip_grad=1.0,
+        train_codec_source="real",
+        sandwich_rate_weight=0.05,
+        sandwich_task_weight=1.0,
+        dino_weight=0.0,
+        human_weight=0.0,
+    )
+
+
+class _EpochPreprocessor(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gain = nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, clips, qp):
+        del qp
+        return clips * self.gain
+
+
+class _EpochPostprocessor(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.bias = nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, clips, qp):
+        del qp
+        return clips + self.bias
+
+
+class _EpochCodec(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.qp = 30
+        self.last_proxy_bpp = None
+        self.last_proxy_diagnostics = {}
+
+    def set_qp(self, qp):
+        self.qp = int(qp)
+
+    def forward(self, clips, *, codec_source="real", use_proxy_gradient=None):
+        del use_proxy_gradient
+        proxy_bpp = clips.mean((1, 2, 3, 4)) * 0.0 + (self.qp / 100.0 - 0.05)
+        self.last_proxy_bpp = proxy_bpp.detach()
+        zero = clips.new_zeros(())
+        self.last_proxy_diagnostics = {
+            "proxy_clamp_fraction": zero,
+            "proxy_below_zero_fraction": zero,
+            "proxy_above_one_fraction": zero,
+        }
+        if codec_source == "proxy":
+            return clips, proxy_bpp
+        real_bpp = proxy_bpp + 0.05
+        return clips, proxy_bpp + (real_bpp - proxy_bpp).detach()
+
+
+class _EpochAnalyzer(nn.Module):
+    def forward(self, clips):
+        score = clips.mean((1, 2, 3, 4))
+        zero = score * 0.0
+        return torch.stack((score, -score, zero, zero, zero), dim=1)
+
+
+class _EpochHuman(nn.Module):
+    def forward(self, restored, reference, neural_code):
+        zero = (restored.mean() + reference.mean() + neural_code.mean()) * 0.0
+        return {
+            "human": zero,
+            "charbonnier": zero,
+            "ms_ssim": zero,
+            "lpips": zero,
+            "temporal": zero,
+            "adaptive_dct": zero,
+        }
+
+
+def test_sandwich_validation_epoch_reports_real_and_proxy_bpp():
+    clips = torch.rand(2, 2, 3, 8, 8)
+    labels = torch.zeros(2, dtype=torch.long)
+    loader = DataLoader(TensorDataset(clips, labels), batch_size=1, shuffle=False)
+    model = AdaptiveVideoSandwich(
+        _EpochPreprocessor(), _EpochCodec(), _EpochPostprocessor()
+    )
+    metrics = run_epoch(
+        loader,
+        model,
+        _EpochAnalyzer(),
+        None,
+        _EpochHuman(),
+        _epoch_smoke_args(),
+        torch.device("cpu"),
+        {"qp30_bpp": 0.30, "qp45_bpp": 0.45},
+    )
+
+    assert metrics["rate"] == pytest.approx(0.375)
+    assert metrics["bpp"] == pytest.approx(metrics["rate"])
+    assert metrics["proxy_bpp"] == pytest.approx(0.325)
+    assert metrics["qp30_bpp"] == pytest.approx(0.30)
+    assert metrics["qp45_bpp"] == pytest.approx(0.45)
+    assert metrics["qp30_proxy_bpp"] == pytest.approx(0.25)
+    assert metrics["qp45_proxy_bpp"] == pytest.approx(0.40)
+    assert all(
+        math.isfinite(value) for value in metrics.values() if isinstance(value, float)
+    )
+
+
+def test_sandwich_training_epoch_runs_backward_and_optimizer_step():
+    clips = torch.rand(1, 2, 3, 8, 8)
+    labels = torch.zeros(1, dtype=torch.long)
+    loader = DataLoader(TensorDataset(clips, labels), batch_size=1, shuffle=False)
+    model = AdaptiveVideoSandwich(
+        _EpochPreprocessor(), _EpochCodec(), _EpochPostprocessor()
+    )
+    optimizer = torch.optim.SGD(model.trainable_parameters(), lr=0.1)
+    before = [parameter.detach().clone() for parameter in model.trainable_parameters()]
+
+    metrics = run_epoch(
+        loader,
+        model,
+        _EpochAnalyzer(),
+        None,
+        _EpochHuman(),
+        _epoch_smoke_args(),
+        torch.device("cpu"),
+        {"qp30_bpp": 0.30, "qp45_bpp": 0.45},
+        optimizer=optimizer,
+        scaler=torch.amp.GradScaler("cpu", enabled=False),
+        qp_rng=random.Random(7),
+    )
+
+    after = list(model.trainable_parameters())
+    assert any(not torch.equal(old, new.detach()) for old, new in zip(before, after))
+    assert metrics["bpp"] == pytest.approx(metrics["rate"])
+    assert math.isfinite(metrics["gradient_total"])

@@ -75,11 +75,13 @@ python train_proxy.py \
   --hidden-channels 48 --latent-channels 64 \
   --bottleneck-channels 96 --blocks-per-stage 2 \
   --film-channels 64 --rate-delta-weight 0.5 \
-  --rate-direction-weight 0.1 --gradient-probe-batches 25 \
+  --rate-direction-weight 0.1 \
+  --pair-strengths 0 0.05 0.1 0.2 \
+  --gradient-probe-batches 25 \
   --output-dir checkpoints/h264_proxy
 ```
 
-Do not train the wrappers unless the proxy passes both reconstruction/rate audits and the real-codec gradient-direction probe described in [`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md).
+Paired variants invoke online FFmpeg even when the base supervision comes from the precomputed cache. Do not train the wrappers unless the proxy passes both reconstruction/rate audits and the real-codec gradient-direction probe described in [`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md). `--allow-incomplete-audit` is only for a non-reportable diagnostic fit and is not expected to produce `best_feasible.pt`.
 
 ### 3. Train the adaptive sandwich
 
@@ -122,7 +124,7 @@ The command writes `per_video_metrics.csv`, `summary.json`, `bd_rate.json`, `boo
 
 ```bash
 python -m pytest -q
-python -m compileall preprocessing train_sandwich.py evaluate_sandwich.py
+python -m compileall -q preprocessing precompute_codec.py train.py train_proxy.py train_sandwich.py evaluate_real_codec.py evaluate_sandwich.py paper/build_pdf.py
 ```
 
 V10 adds regression coverage for checkpoint fallback, explicit metric selection, optimizer selection, method-aware bootstrap, PSNR consistency, raw-curve sensitivity, codec command capture, and proxy saturation. CI and a local environment with PyTorch are the authoritative verification paths.

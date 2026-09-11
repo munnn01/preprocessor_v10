@@ -694,6 +694,8 @@ class ParallelStandardVideoCodec(nn.Module):
         self.proxy = proxy.requires_grad_(False)
         self.proxy.eval()
         self.last_proxy_diagnostics: dict[str, torch.Tensor] = {}
+        self.last_real_bpp: torch.Tensor | None = None
+        self.last_proxy_bpp: torch.Tensor | None = None
 
     @property
     def qp(self) -> int:
@@ -720,16 +722,24 @@ class ParallelStandardVideoCodec(nn.Module):
         if codec_source == "proxy":
             reconstruction, bpp = self.proxy(clip, self.qp)
             self.last_proxy_diagnostics = dict(getattr(self.proxy, "last_diagnostics", {}))
+            self.last_real_bpp = None
+            self.last_proxy_bpp = bpp.detach()
             return reconstruction, bpp
         if codec_source != "real":
             raise ValueError("codec_source must be 'real' or 'proxy'")
         real_reconstruction, real_bpp = self.standard_codec(clip.detach())
+        self.last_real_bpp = real_bpp.detach()
         if use_proxy_gradient is None:
             use_proxy_gradient = self.training and torch.is_grad_enabled()
         if not use_proxy_gradient:
+            with torch.no_grad():
+                _, proxy_bpp = self.proxy(clip, self.qp)
+            self.last_proxy_bpp = proxy_bpp.detach()
+            self.last_proxy_diagnostics = dict(getattr(self.proxy, "last_diagnostics", {}))
             return real_reconstruction, real_bpp
 
         proxy_reconstruction, proxy_bpp = self.proxy(clip, self.qp)
+        self.last_proxy_bpp = proxy_bpp.detach()
         self.last_proxy_diagnostics = dict(getattr(self.proxy, "last_diagnostics", {}))
         reconstruction = proxy_reconstruction + (
             real_reconstruction - proxy_reconstruction

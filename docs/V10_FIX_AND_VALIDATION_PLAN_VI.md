@@ -114,7 +114,7 @@ Dừng nếu real BPP tăng có hệ thống trong khi proxy BPP giảm, clamp v
 ## 8. Lệnh kiểm định tối thiểu
 
 ```bash
-python -m compileall preprocessing train.py train_proxy.py train_sandwich.py evaluate_sandwich.py
+python -m compileall -q preprocessing precompute_codec.py train.py train_proxy.py train_sandwich.py evaluate_real_codec.py evaluate_sandwich.py paper/build_pdf.py
 python -m pytest -q
 python train_sandwich.py --help
 python evaluate_sandwich.py --help

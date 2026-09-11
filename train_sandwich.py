@@ -585,6 +585,12 @@ def forward_losses(
     ):
         value = diagnostics.get(name, zero)
         losses[name] = value.float() if isinstance(value, torch.Tensor) else zero + float(value)
+    proxy_bpp = getattr(model.codec, "last_proxy_bpp", None)
+    losses["proxy_bpp"] = (
+        proxy_bpp.float().mean()
+        if isinstance(proxy_bpp, torch.Tensor)
+        else losses["rate"].detach()
+    )
     losses["preprocessor_boundary_fraction"] = (
         (output.neural_code <= 0.0) | (output.neural_code >= 1.0)
     ).float().mean()
@@ -650,7 +656,8 @@ def run_epoch(
         name: AverageMeter()
         for name in (
             "loss",
-            "bpp",
+            "rate",
+            "proxy_bpp",
             "rate_ratio",
             "task",
             "dino",
@@ -673,7 +680,13 @@ def run_epoch(
         )
     }
     per_qp = {
-        qp: {"bpp": AverageMeter(), "top1": 0, "top5": 0, "examples": 0}
+        qp: {
+            "bpp": AverageMeter(),
+            "proxy_bpp": AverageMeter(),
+            "top1": 0,
+            "top5": 0,
+            "examples": 0,
+        }
         for qp in args.codec_qps
     }
     correct1 = correct5 = examples = 0
@@ -752,11 +765,15 @@ def run_epoch(
                 examples += batch
                 if not training:
                     per_qp[qp]["bpp"].update(float(losses["rate"].detach()), batch)
+                    per_qp[qp]["proxy_bpp"].update(
+                        float(losses["proxy_bpp"].detach()), batch
+                    )
                     per_qp[qp]["top1"] += top1
                     per_qp[qp]["top5"] += top5
                     per_qp[qp]["examples"] += batch
             iterator.set_postfix(loss=f"{meters['loss'].average:.4f}")
     metrics = {name: meter.average for name, meter in meters.items()}
+    metrics["bpp"] = metrics["rate"]
     metrics.update(
         {"top1": correct1 / max(examples, 1), "top5": correct5 / max(examples, 1)}
     )
@@ -764,6 +781,7 @@ def run_epoch(
         for qp, values in per_qp.items():
             count = max(int(values["examples"]), 1)
             metrics[f"qp{qp}_bpp"] = values["bpp"].average
+            metrics[f"qp{qp}_proxy_bpp"] = values["proxy_bpp"].average
             metrics[f"qp{qp}_top1"] = float(values["top1"]) / count
             metrics[f"qp{qp}_top5"] = float(values["top5"]) / count
     elapsed = time.perf_counter() - epoch_started

@@ -9,9 +9,9 @@
   "result_policy": "Populate Results only from artifacts satisfying docs/EXPERIMENT_PROTOCOL.md and then obtain human co-author approval.",
   "automated_verification": {
     "command": "python -m pytest -q",
-    "collected_tests": 104,
-    "observed_passed": 103,
+    "collected_tests": 107,
+    "observed_passed": 106,
     "observed_skipped": 1,
-    "status": "reached 100 percent with no assertion failure; one real-codec test skipped because FFmpeg was unavailable; local Windows process was interrupted after a PyTorch teardown hang"
+    "status": "completed successfully with no assertion failure; one real-codec test skipped because FFmpeg was unavailable"
   }
 }

@@ -93,6 +93,11 @@ def parse_args() -> argparse.Namespace:
         help="blur strengths for real-codec paired variants; enables online FFmpeg",
     )
     optimization.add_argument(
+        "--allow-incomplete-audit",
+        action="store_true",
+        help="allow proxy fitting without paired variants; no feasible checkpoint is expected",
+    )
+    optimization.add_argument(
         "--preprocessor-checkpoint",
         help="frozen Swin used for on-policy paired variants; requires --pair-strengths",
     )
@@ -432,16 +437,28 @@ def run_epoch(
     return {name: meter.average for name, meter in meters.items() if meter.count > 0}
 
 
-def main() -> None:
-    args = parse_args()
+def validate_pair_audit_configuration(args: argparse.Namespace) -> None:
+    """Require paired perturbations unless an incomplete diagnostic was explicit."""
+
     if args.init_checkpoint and args.resume:
         raise ValueError("choose --init-checkpoint or --resume, not both")
     if args.preprocessor_checkpoint and args.pair_strengths is None:
         raise ValueError("--preprocessor-checkpoint requires --pair-strengths")
+    if args.pair_strengths is None and not getattr(args, "allow_incomplete_audit", False):
+        raise ValueError(
+            "--pair-strengths is required for the directional proxy audit and "
+            "best_feasible.pt; pass --allow-incomplete-audit only for a non-reportable "
+            "diagnostic fit"
+        )
     if args.pair_strengths is not None and any(
         not math.isfinite(value) or not 0 <= value <= 1 for value in args.pair_strengths
     ):
         raise ValueError("--pair-strengths must be finite values in [0, 1]")
+
+
+def main() -> None:
+    args = parse_args()
+    validate_pair_audit_configuration(args)
     rate_weights = (
         args.rate_weight, args.rate_delta_weight, args.rate_direction_weight
     )
@@ -650,6 +667,11 @@ def main() -> None:
             "train_metrics": train_metrics,
             "val_metrics": val_metrics,
             "proxy_audit": proxy_audit,
+            "scientific_status": (
+                "non_reportable_incomplete_proxy_audit"
+                if args.pair_strengths is None
+                else "proxy_audit_evaluated"
+            ),
         }
         save_checkpoint(output_dir / "last.pt", payload)
         if proxy_audit["score"] < best_audit_score:

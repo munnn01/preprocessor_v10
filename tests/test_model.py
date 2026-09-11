@@ -192,6 +192,8 @@ def test_parallel_codec_uses_real_forward_values_and_proxy_backward():
     reconstruction, bpp = codec(clip)
     torch.testing.assert_close(reconstruction, torch.full_like(clip, 0.375))
     torch.testing.assert_close(bpp, torch.tensor([1.25]))
+    torch.testing.assert_close(codec.last_real_bpp, torch.tensor([1.25]))
+    torch.testing.assert_close(codec.last_proxy_bpp, clip.detach().mean((1, 2, 3, 4)))
     (reconstruction.mean() + bpp.mean()).backward()
     assert clip.grad is not None
     assert torch.count_nonzero(clip.grad) == clip.numel()
