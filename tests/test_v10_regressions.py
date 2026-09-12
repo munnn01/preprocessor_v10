@@ -383,6 +383,32 @@ class _EpochCodec(nn.Module):
         return clips, proxy_bpp + (real_bpp - proxy_bpp).detach()
 
 
+class _ContractViolatingCodec(_EpochCodec):
+    """Return real BPP without refreshing the proxy-drift side-channel."""
+
+    def forward(self, clips, *, codec_source="real", use_proxy_gradient=None):
+        del codec_source, use_proxy_gradient
+        real_bpp = clips.new_full((clips.shape[0],), self.qp / 100.0)
+        return clips, real_bpp
+
+
+class _InvalidProxyBppCodec(_EpochCodec):
+    def __init__(self, invalid_proxy_bpp) -> None:
+        super().__init__()
+        self.invalid_proxy_bpp = invalid_proxy_bpp
+
+    def forward(self, clips, *, codec_source="real", use_proxy_gradient=None):
+        reconstruction, real_bpp = super().forward(
+            clips,
+            codec_source=codec_source,
+            use_proxy_gradient=use_proxy_gradient,
+        )
+        self.last_proxy_bpp = torch.as_tensor(
+            self.invalid_proxy_bpp, device=clips.device, dtype=clips.dtype
+        )
+        return reconstruction, real_bpp
+
+
 class _EpochAnalyzer(nn.Module):
     def forward(self, clips):
         score = clips.mean((1, 2, 3, 4))
@@ -461,3 +487,61 @@ def test_sandwich_training_epoch_runs_backward_and_optimizer_step():
     assert any(not torch.equal(old, new.detach()) for old, new in zip(before, after))
     assert metrics["bpp"] == pytest.approx(metrics["rate"])
     assert math.isfinite(metrics["gradient_total"])
+
+
+def test_sandwich_epoch_rejects_missing_or_stale_proxy_bpp():
+    clips = torch.rand(1, 2, 3, 8, 8)
+    loader = DataLoader(
+        TensorDataset(clips, torch.zeros(1, dtype=torch.long)),
+        batch_size=1,
+        shuffle=False,
+    )
+    codec = _ContractViolatingCodec()
+    codec.last_proxy_bpp = torch.tensor([0.25])  # Plausible but stale and same-sized.
+    model = AdaptiveVideoSandwich(
+        _EpochPreprocessor(), codec, _EpochPostprocessor()
+    )
+
+    with pytest.raises(RuntimeError, match="did not update last_proxy_bpp at qp=30"):
+        run_epoch(
+            loader,
+            model,
+            _EpochAnalyzer(),
+            None,
+            _EpochHuman(),
+            _epoch_smoke_args(),
+            torch.device("cpu"),
+            {"qp30_bpp": 0.30, "qp45_bpp": 0.45},
+        )
+
+
+def test_sandwich_epoch_rejects_misshaped_or_nonfinite_proxy_bpp():
+    clips = torch.rand(1, 2, 3, 8, 8)
+    loader = DataLoader(
+        TensorDataset(clips, torch.zeros(1, dtype=torch.long)),
+        batch_size=1,
+        shuffle=False,
+    )
+    invalid_cases = (
+        (torch.ones(99), "shape"),
+        (torch.tensor([float("nan")]), "non-finite"),
+        (torch.tensor([float("inf")]), "non-finite"),
+    )
+
+    for invalid_proxy_bpp, message in invalid_cases:
+        model = AdaptiveVideoSandwich(
+            _EpochPreprocessor(),
+            _InvalidProxyBppCodec(invalid_proxy_bpp),
+            _EpochPostprocessor(),
+        )
+        with pytest.raises(RuntimeError, match=message):
+            run_epoch(
+                loader,
+                model,
+                _EpochAnalyzer(),
+                None,
+                _EpochHuman(),
+                _epoch_smoke_args(),
+                torch.device("cpu"),
+                {"qp30_bpp": 0.30, "qp45_bpp": 0.45},
+            )

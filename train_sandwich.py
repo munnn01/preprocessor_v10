@@ -551,6 +551,9 @@ def forward_losses(
 ) -> dict[str, torch.Tensor]:
     use_amp = bool(args.amp and clips.device.type == "cuda")
     device_type = clips.device.type
+    # Invalidate the side-channel before every call so a bridge that forgets to
+    # refresh it cannot silently reuse proxy BPP from an earlier batch or QP.
+    model.codec.last_proxy_bpp = None
     with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
         output = model(
             clips,
@@ -586,11 +589,22 @@ def forward_losses(
         value = diagnostics.get(name, zero)
         losses[name] = value.float() if isinstance(value, torch.Tensor) else zero + float(value)
     proxy_bpp = getattr(model.codec, "last_proxy_bpp", None)
-    losses["proxy_bpp"] = (
-        proxy_bpp.float().mean()
-        if isinstance(proxy_bpp, torch.Tensor)
-        else losses["rate"].detach()
-    )
+    codec_name = type(model.codec).__name__
+    if not isinstance(proxy_bpp, torch.Tensor):
+        # Missing per-forward state is a runtime bridge failure, not caller type misuse.
+        raise RuntimeError(  # noqa: TRY004
+            f"{codec_name} did not update last_proxy_bpp at qp={qp}; "
+            "proxy-drift tracking requires proxy BPP from every forward"
+        )
+    if proxy_bpp.shape[:1] != clips.shape[:1]:
+        raise RuntimeError(
+            f"{codec_name} reported proxy BPP with shape {tuple(proxy_bpp.shape)} "
+            f"for batch size {clips.shape[0]} at qp={qp}; "
+            "last_proxy_bpp is stale or mis-shaped"
+        )
+    if not bool(torch.isfinite(proxy_bpp).all()):
+        raise RuntimeError(f"{codec_name} produced non-finite proxy BPP at qp={qp}")
+    losses["proxy_bpp"] = proxy_bpp.detach().float().mean()
     losses["preprocessor_boundary_fraction"] = (
         (output.neural_code <= 0.0) | (output.neural_code >= 1.0)
     ).float().mean()
