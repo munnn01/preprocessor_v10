@@ -160,6 +160,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     objective = parser.add_argument_group("adaptive VCM objective")
     objective.add_argument("--sandwich-rate-weight", type=float, default=0.05)
+    objective.add_argument(
+        "--sandwich-rate-weights",
+        type=float,
+        nargs="+",
+        help=(
+            "optional per-QP rate weights aligned with --codec-qps; "
+            "when provided, these override --sandwich-rate-weight"
+        ),
+    )
     objective.add_argument("--sandwich-task-weight", type=float, default=1.0)
     objective.add_argument("--dino-weight", type=float, default=0.25)
     objective.add_argument("--human-weight", type=float, default=1.0)
@@ -240,6 +249,7 @@ RESUME_LOCKED_ARGUMENTS = (
     "gradient_audit_interval",
     "max_proxy_clamp_fraction",
     "sandwich_rate_weight",
+    "sandwich_rate_weights",
     "sandwich_task_weight",
     "dino_weight",
     "human_weight",
@@ -574,7 +584,7 @@ def forward_losses(
             dino_loss=dino_loss,
             human_terms=human_terms,
             anchor_bpp=anchor_bpp,
-            rate_weight=args.sandwich_rate_weight,
+            rate_weight=sandwich_rate_weights_by_qp(args)[int(qp)],
             task_weight=args.sandwich_task_weight,
             dino_weight=args.dino_weight,
             human_weight=args.human_weight,
@@ -629,16 +639,33 @@ def _gradient_norm(value: torch.Tensor, parameters: list[torch.nn.Parameter]) ->
     return math.sqrt(squared)
 
 
+def sandwich_rate_weights_by_qp(args: argparse.Namespace) -> dict[int, float]:
+    """Resolve and validate scalar or per-QP sandwich rate weights."""
+
+    scalar = float(args.sandwich_rate_weight)
+    if not math.isfinite(scalar) or scalar < 0:
+        raise ValueError("--sandwich-rate-weight must be finite and non-negative")
+    configured = getattr(args, "sandwich_rate_weights", None)
+    values = [scalar] * len(args.codec_qps) if configured is None else list(configured)
+    if len(values) != len(args.codec_qps):
+        raise ValueError("--sandwich-rate-weights must match --codec-qps")
+    if any(not math.isfinite(value) or value < 0 for value in values):
+        raise ValueError("sandwich rate weights must be finite and non-negative")
+    return {int(qp): float(value) for qp, value in zip(args.codec_qps, values)}
+
+
 def objective_gradient_norms(
     losses: dict[str, torch.Tensor],
     model: AdaptiveVideoSandwich,
     args: argparse.Namespace,
+    qp: int,
 ) -> dict[str, float]:
     """Measure weighted objective gradients for sparse, opt-in pilot audits."""
 
     parameters = [parameter for parameter in model.trainable_parameters() if parameter.requires_grad]
+    rate_weight = sandwich_rate_weights_by_qp(args)[int(qp)]
     terms = {
-        "gradient_rate": args.sandwich_rate_weight * losses["rate_ratio"],
+        "gradient_rate": rate_weight * losses["rate_ratio"],
         "gradient_task": args.sandwich_task_weight * losses["task"],
         "gradient_dino": args.dino_weight * losses["dino"],
         "gradient_human": args.human_weight * losses["human"],
@@ -746,7 +773,7 @@ def run_epoch(
                         and (step - 1) % args.gradient_audit_interval == 0
                     ):
                         for name, value in objective_gradient_norms(
-                            losses, model, args
+                            losses, model, args, qp
                         ).items():
                             meters[name].update(value)
                     scaler.scale(losses["total"] / args.accumulation_steps).backward()
@@ -791,6 +818,8 @@ def run_epoch(
     metrics.update(
         {"top1": correct1 / max(examples, 1), "top5": correct5 / max(examples, 1)}
     )
+    for qp, rate_weight in sandwich_rate_weights_by_qp(args).items():
+        metrics[f"qp{qp}_rate_weight"] = rate_weight
     if not training:
         for qp, values in per_qp.items():
             count = max(int(values["examples"]), 1)
@@ -877,8 +906,9 @@ def main() -> None:
             raise ValueError("--qp-sampling-weights must be finite and non-negative")
         if not any(value > 0 for value in args.qp_sampling_weights):
             raise ValueError("at least one QP sampling weight must be positive")
+    rate_weights = sandwich_rate_weights_by_qp(args)
     weights = (
-        args.sandwich_rate_weight,
+        *rate_weights.values(),
         args.sandwich_task_weight,
         args.dino_weight,
         args.human_weight,

@@ -104,6 +104,8 @@ python train_sandwich.py \
 
 Use `--postprocessor identity` for the pre-only ablation and `--dino-weight 0`, `--adaptive-dct-weight 0`, or `--lpips-weight 0` for controlled objective ablations. DINOv2 and the task analyzer remain frozen.
 
+For a QP-dependent rate/task trade-off, pass one rate weight per codec QP in the same order, for example `--codec-qps 30 35 40 45 --sandwich-rate-weights 0.12 0.10 0.06 0.05`. This overrides the scalar `--sandwich-rate-weight`; the resolved weights are stored in checkpoints and epoch metrics and are locked by exact resume. Keep `--qp-sampling-weights` conceptually separate: it changes how often each QP is sampled, whereas `--sandwich-rate-weights` changes the rate gradient applied when that QP is sampled.
+
 ### 4. Evaluate only through real codecs
 
 ```bash

@@ -23,8 +23,10 @@ from train_sandwich import (
     _validate_resume_configuration,
     build_optimizer,
     build_parser,
+    forward_losses,
     initial_selection_state,
     run_epoch,
+    sandwich_rate_weights_by_qp,
     update_selection_state,
 )
 
@@ -89,6 +91,53 @@ def test_sandwich_parser_does_not_expose_legacy_noop_rate_flags():
     assert "mask_rate_outside_weight" not in destinations
     assert "rate_dual_control" not in destinations
     assert "refresh_proxy_on_resume" not in destinations
+
+
+def test_sandwich_parser_accepts_per_qp_rate_weights():
+    args = build_parser().parse_args(
+        [
+            "--proxy-checkpoint",
+            "proxy.pt",
+            "--codec-qps",
+            "30",
+            "35",
+            "40",
+            "45",
+            "--sandwich-rate-weight",
+            "0.05",
+            "--sandwich-rate-weights",
+            "0.12",
+            "0.10",
+            "0.06",
+            "0.05",
+        ]
+    )
+    assert sandwich_rate_weights_by_qp(args) == pytest.approx(
+        {30: 0.12, 35: 0.10, 40: 0.06, 45: 0.05}
+    )
+
+
+def test_sandwich_scalar_rate_weight_remains_the_backward_compatible_default():
+    args = SimpleNamespace(
+        codec_qps=[30, 45],
+        sandwich_rate_weight=0.07,
+        sandwich_rate_weights=None,
+    )
+    assert sandwich_rate_weights_by_qp(args) == {30: 0.07, 45: 0.07}
+
+
+@pytest.mark.parametrize(
+    "weights",
+    ([0.1], [0.1, float("nan")], [0.1, -0.2]),
+)
+def test_sandwich_rejects_invalid_per_qp_rate_weights(weights):
+    args = SimpleNamespace(
+        codec_qps=[30, 45],
+        sandwich_rate_weight=0.05,
+        sandwich_rate_weights=weights,
+    )
+    with pytest.raises(ValueError, match=r"rate.?weights"):
+        sandwich_rate_weights_by_qp(args)
 
 
 def test_optimizer_flag_selects_the_real_optimizer():
@@ -427,6 +476,45 @@ class _EpochHuman(nn.Module):
             "temporal": zero,
             "adaptive_dct": zero,
         }
+
+
+def test_sandwich_forward_applies_the_rate_weight_for_the_current_qp():
+    clips = torch.rand(1, 2, 3, 8, 8)
+    labels = torch.zeros(1, dtype=torch.long)
+    args = _epoch_smoke_args()
+    args.sandwich_rate_weights = [0.12, 0.05]
+    model = AdaptiveVideoSandwich(
+        _EpochPreprocessor(), _EpochCodec(), _EpochPostprocessor()
+    )
+
+    qp30 = forward_losses(
+        clips,
+        labels,
+        30,
+        model,
+        _EpochAnalyzer(),
+        None,
+        _EpochHuman(),
+        args,
+        training=False,
+        anchor_bpp=0.30,
+    )
+    qp45 = forward_losses(
+        clips,
+        labels,
+        45,
+        model,
+        _EpochAnalyzer(),
+        None,
+        _EpochHuman(),
+        args,
+        training=False,
+        anchor_bpp=0.45,
+    )
+
+    assert float(qp30["rate_ratio"].detach()) == pytest.approx(1.0)
+    assert float(qp45["rate_ratio"].detach()) == pytest.approx(1.0)
+    assert float((qp30["total"] - qp45["total"]).detach()) == pytest.approx(0.07)
 
 
 def test_sandwich_validation_epoch_reports_real_and_proxy_bpp():
